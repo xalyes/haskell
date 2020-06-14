@@ -137,27 +137,18 @@ shiftLMultiple bits count =
     else shiftLMultiple (shiftLOne bits) (count - 1)
   where shiftLOne (bit:bits) = bits ++ [bit]
 
-zipBytesWith3 :: (Bool -> Bool -> Bool -> Bool) -> [Bool] -> [Bool] -> [Bool] -> [Bool]
-zipBytesWith3 f x y z = zipWith3Internal f x y z []
-    where zipWith3Internal ff xx yy zz acc | length acc == length xx = acc
-                                           | otherwise = let 
-                                              a = xx !! (length xx - 1 - length acc)
-                                              b = yy !! (length yy - 1 - length acc)
-                                              c = zz !! (length zz - 1 - length acc)
-                                            in zipWith3Internal ff xx yy zz ([ff a b c] ++ acc)
-
 funF :: [Bool] -> [Bool] -> [Bool] -> [Bool]
--- funF xs ys zs | traceShow (fromBits xs, fromBits ys, fromBits zs, fromBits $ zipBytesWith3 (\b c d -> (b && c)) xs ys zs) False = undefined
-funF xs ys zs = zipBytesWith3 (\b c d -> (b && c) || ((not b) && d)) xs ys zs
+-- funF xs ys zs | traceShow (fromBits xs, fromBits ys, fromBits zs, fromBits $ zipWith3 (\b c d -> (b && c)) xs ys zs) False = undefined
+funF xs ys zs = zipWith3 (\b c d -> (b && c) || ((not b) && d)) xs ys zs
 
 funG :: [Bool] -> [Bool] -> [Bool] -> [Bool]
-funG xs ys zs = zipBytesWith3 (\b c d -> (d && b) || ((not d) && c)) xs ys zs
+funG xs ys zs = zipWith3 (\b c d -> (d && b) || ((not d) && c)) xs ys zs
 
 funH :: [Bool] -> [Bool] -> [Bool] -> [Bool]
-funH xs ys zs = zipBytesWith3 (\b c d -> (b `xor` c) `xor` d) xs ys zs
+funH xs ys zs = zipWith3 (\b c d -> (b `xor` c) `xor` d) xs ys zs
 
 funI :: [Bool] -> [Bool] -> [Bool] -> [Bool]
-funI xs ys zs = zipBytesWith3 (\b c d -> c `xor` (b || not d)) xs ys zs
+funI xs ys zs = zipWith3 (\b c d -> c `xor` (b || not d)) xs ys zs
 
 splitEvery :: Int -> [a] -> [[a]]
 splitEvery _ [] = []

@@ -1,4 +1,4 @@
-module TestMd5 where
+module Main where
 
 {-# LANGUAGE FlexibleInstances #-}
 
