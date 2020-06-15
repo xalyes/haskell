@@ -9,20 +9,68 @@ import Data.List
 import Data.Word
 import Debug.Trace
 
+data Byte = Byte Bool Bool Bool Bool Bool Bool Bool Bool
+    deriving (Show, Eq)
+data Byte32 = Byte32 Byte Byte Byte Byte deriving Show
+data Byte64 = Byte64 Byte32 Byte32 deriving Show
+
+zeroByte = Byte False False False False False False False False
+
+bools8ToByte :: [Bool] -> Byte
+bools8ToByte x = let
+    bit0 = x!!7
+    bit1 = x!!6
+    bit2 = x!!5
+    bit3 = x!!4
+    bit4 = x!!3
+    bit5 = x!!2
+    bit6 = x!!1
+    bit7 = x!!0
+  in Byte bit7 bit6 bit5 bit4 bit3 bit2 bit1 bit0
+
+bytesToBools :: [Byte] -> [Bool]
+bytesToBools [] = []
+bytesToBools (Byte byte7 byte6 byte5 byte4 byte3 byte2 byte1 byte0 : xs) = [byte7, byte6, byte5, byte4, byte3, byte2, byte1, byte0] ++ bytesToBools xs
+
+bools32ToByte32 :: [Bool] -> Byte32
+bools32ToByte32 x = let
+    byte0 = bools8ToByte (drop 24 x)
+    byte1 = bools8ToByte (take 8 (drop 16 x))
+    byte2 = bools8ToByte (take 8 (drop 8 x))
+    byte3 = bools8ToByte (take 8 (x))
+  in Byte32 byte3 byte2 byte1 byte0
+
+
+word8ToByte :: Word8 -> Byte
+word8ToByte x = bools8ToByte $ toBits x
+
+intToByte32 :: Int -> Byte32
+intToByte32 x = bools32ToByte32 $ toBits x
+
+integerToByte64 :: Integer -> Byte64
+integerToByte64 x = let
+    bools = toBits x
+    small32 = bools32ToByte32 (drop 32 bools)
+    big32 = bools32ToByte32 (take 32 bools)
+  in Byte64 big32 small32
+
 md5 :: String -> String
 md5 str = let
-        (a, b, c, d) = md5Internal (splitEvery 32 (prepareString str)) (toBits a00) (toBits b00) (toBits c00) (toBits d00) 0 (toBits a00) (toBits b00) (toBits c00) (toBits d00)
+        (a, b, c, d) = md5Internal (splitEvery 32 (bytesToBools $ prepareStringBytes str)) (toBits a00) (toBits b00) (toBits c00) (toBits d00) 0 (toBits a00) (toBits b00) (toBits c00) (toBits d00)
         result = ([showHex' (fromBits i) | i <- reverse $ splitEvery 8 a] ++ [showHex' (fromBits i) | i <- reverse $ splitEvery 8 b]
          ++ [showHex' (fromBits i) | i <- reverse $ splitEvery 8 c] ++ [showHex' (fromBits i) | i <- reverse $ splitEvery 8 d])
     in foldl (.) ("" ++) result $ ""
 
-prepareString :: String -> [Bool]
-prepareString str =
+prepareStringBytes :: String -> [Byte]
+prepareStringBytes str =
     let
-        inputStringInBytes = strToBits str
-        len = genericLength inputStringInBytes
+        inputStringInBytes = strToBytes str
+        len = (genericLength inputStringInBytes) * 8
     in
-        (addLength len . alignBy448 . foldl (++) [] . convertToLittleEndian . splitEvery 32 . addPadding) inputStringInBytes
+        (addLengthBytes len . alignBy448Bytes . convertBytesToLittleEndian . addPaddingBytes) inputStringInBytes
+
+prepareStringByte32 :: String -> [Byte32]
+prepareStringByte32 str = undefined
 
 md5Internal :: [[Bool]] -> [Bool] -> [Bool] -> [Bool] -> [Bool] -> Int -> [Bool] -> [Bool] -> [Bool] -> [Bool]
     -> ([Bool], [Bool], [Bool], [Bool])
@@ -64,46 +112,34 @@ showHex' x =
     then (("0" ++ showHex x "") ++)
     else showHex x
 
-convertToLittleEndian :: [[Bool]] -> [[Bool]]
-convertToLittleEndian x = map f x where
-    f a = foldl (++) [] (reverse $ splitEvery 8 a)
+convertBytesToLittleEndian :: [Byte] -> [Byte]
+convertBytesToLittleEndian x = (foldl (++) []) . (map reverse) . (splitEvery 4) $ x
 
-addPadding :: [Bool] -> [Bool]
-addPadding str     | ((length str) `div` 8) `mod` 4 == 0 = str ++ toBits (0x80::Word8) ++ [False | i <- [0.. 23]]
-                   | ((length str) `div` 8) `mod` 4 == 1 = str ++ toBits (0x80::Word8) ++ [False | i <- [0.. 15]]
-                   | ((length str) `div` 8) `mod` 4 == 2 = str ++ toBits (0x80::Word8) ++ [False | i <- [0.. 7]]
-                   | ((length str) `div` 8) `mod` 4 == 3 = str ++ toBits (0x80::Word8)
+addPaddingBytes :: [Byte] -> [Byte]
+addPaddingBytes str | (length str) `mod` 4 == 0 = str ++ [word8ToByte 0x80] ++ [zeroByte, zeroByte, zeroByte]
+                    | (length str) `mod` 4 == 1 = str ++ [word8ToByte 0x80] ++ [zeroByte, zeroByte]
+                    | (length str) `mod` 4 == 2 = str ++ [word8ToByte 0x80] ++ [zeroByte]
+                    | (length str) `mod` 4 == 3 = str ++ [word8ToByte 0x80]
 
-strToBits :: String -> [Bool]
-strToBits [] = []
-strToBits (char:chars) =
-    (alignBy8 . cutZeroBits . toBits . ord) char ++ strToBits chars
+strToBytes :: String -> [Byte]
+strToBytes [] = []
+strToBytes (char:chars) = let
+    cutZeroBytes [] = [zeroByte]
+    cutZeroBytes (x:xs) = if x == zeroByte then cutZeroBytes xs else (x:xs)
+    (Byte32 byte3 byte2 byte1 byte0) = intToByte32 $ ord char
+  in (cutZeroBytes [byte3, byte2, byte1, byte0]) ++ strToBytes chars
 
-cutZeroBits :: [Bool] -> [Bool]
-cutZeroBits [] = []
-cutZeroBits (byte:bytes) =
-    if byte == False
-    then cutZeroBits bytes
-    else (byte:bytes)
-
-alignBy8 :: [Bool] -> [Bool]
-alignBy8 bytes =
-    if length bytes `mod` 8 == 0
-    then bytes
-    else alignBy8 (False:bytes)
-
-alignBy448 :: [Bool] -> [Bool]
-alignBy448 bytes = 
-    let l' = bytes ++ [False] in
-        if (length l') `mod` 512 == 448
+alignBy448Bytes :: [Byte] -> [Byte]
+alignBy448Bytes bytes = 
+    let l' = bytes ++ [zeroByte] in
+        if ((length l') * 8) `mod` 512 == 448
         then l'
-        else alignBy448 l'
+        else alignBy448Bytes l'
 
-addLength :: Integer -> [Bool] -> [Bool]
-addLength len bytes = 
-    let (big, little) = splitAt ((length (l) + 1) `div` 2) l 
-        l = toBits len
-    in bytes ++ little ++ big
+addLengthBytes :: Integer -> [Byte] -> [Byte]
+addLengthBytes len bytes = 
+    let (Byte64 (Byte32 byte7 byte6 byte5 byte4) (Byte32 byte3 byte2 byte1 byte0)) = integerToByte64 len
+    in bytes ++ [byte3, byte2, byte1, byte0, byte7, byte6, byte5, byte4] -- little endian
 
 class CanModuloSum a where
     (|+) :: [Bool] -> a -> [Bool]
