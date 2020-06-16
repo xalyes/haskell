@@ -31,7 +31,7 @@ bools8ToByte x = let
 
 bytesToBools :: [Byte] -> [Bool]
 bytesToBools [] = []
-bytesToBools (Byte byte7 byte6 byte5 byte4 byte3 byte2 byte1 byte0 : xs) = [byte7, byte6, byte5, byte4, byte3, byte2, byte1, byte0] ++ bytesToBools xs
+bytesToBools (Byte bit7 bit6 bit5 bit4 bit3 bit2 bit1 bit0 : xs) = [bit7, bit6, bit5, bit4, bit3, bit2, bit1, bit0] ++ bytesToBools xs
 
 bools32ToByte32 :: [Bool] -> Byte32
 bools32ToByte32 x = let
@@ -54,6 +54,11 @@ integerToByte64 x = let
     big32 = bools32ToByte32 (take 32 bools)
   in Byte64 big32 small32
 
+bitOpByte :: (Bool -> Bool -> Bool) -> Byte -> Byte -> Byte
+bitOpByte op (Byte bit7 bit6 bit5 bit4 bit3 bit2 bit1 bit0) 
+    (Byte bit7' bit6' bit5' bit4' bit3' bit2' bit1' bit0')
+        = (Byte (bit7 `op` bit7') (bit6 `op` bit6') (bit5 `op` bit5') (bit4 `op` bit4') (bit3 `op` bit3') (bit2 `op` bit2') (bit1 `op` bit1') (bit0 `op` bit0'))
+
 md5 :: String -> String
 md5 str = let
         (a, b, c, d) = md5Internal (splitEvery 32 (bytesToBools $ prepareString str)) (toBits a00, toBits b00, toBits c00, toBits d00)
@@ -70,24 +75,22 @@ prepareString str =
         (addLength len . alignBy448 . convertBytesToLittleEndian . addPadding) inputStringInBytes
 
 md5Step :: State ([[Bool]], Int, [Bool], [Bool], [Bool], [Bool]) ()
-md5Step = state $ \(x, i, a, b, c, d) -> ((), (x, i+1, d, (work x a b c d (s!!i) i), b, c))
+md5Step = state $ \(x, i, a, b, c, d) -> ((), (x, i+1, d, (work x a b c d (s!!i) i), b, c)) where
+    work x a b c d s i | i < 0 || i > 63 = error "Expected i from 0 to 63"
+                   | i < 16 = b |+ (shiftLMultiple (a |+ (funF b c d) |+ (x!!i) |+ (t!!i)) s)
+                   | i < 32 = b |+ (shiftLMultiple (a |+ (funG b c d) |+ ((x!!((5*i + 1) `mod` 16)) |+ (t!!i))) s)
+                   | i < 48 = b |+ (shiftLMultiple (a |+ (funH b c d) |+ ((x!!((3*i + 5) `mod` 16)) |+ (t!!i))) s)
+                   | i < 64 = b |+ (shiftLMultiple (a |+ (funI b c d) |+ ((x!!((7*i) `mod` 16)) |+ (t!!i))) s)
 
 md5Internal :: [[Bool]] -> ([Bool], [Bool], [Bool], [Bool]) -> ([Bool], [Bool], [Bool], [Bool])
-md5Internal input (a0, b0, c0, d0) = let
+md5Internal input (a0, b0, c0, d0) =
+  let
     (_, _, a, b, c, d) = snd $ runState (replicateM_ 64 md5Step) (input, 0, a0, b0, c0, d0)
     stepResult = (a |+ a0, b |+ b0, c |+ c0, d |+ d0)
   in
     if length input == 16
     then stepResult
     else md5Internal (drop 16 input) stepResult
-
-work :: [[Bool]] -> [Bool] -> [Bool] -> [Bool] -> [Bool] -> Int -> Int -> [Bool]
--- work x a b c d s i | traceShow (fromBits (funF b c d)) False = undefined
-work x a b c d s i | i < 0 || i > 63 = error "Expected i from 0 to 63"
-                   | i < 16 = b |+ (shiftLMultiple (a |+ (funF b c d) |+ (x!!i) |+ (t!!i)) s)
-                   | i < 32 = b |+ (shiftLMultiple (a |+ (funG b c d) |+ ((x!!((5*i + 1) `mod` 16)) |+ (t!!(i)))) s)
-                   | i < 48 = b |+ (shiftLMultiple (a |+ (funH b c d) |+ ((x!!((3*i + 5) `mod` 16)) |+ (t!!(i)))) s)
-                   | i < 64 = b |+ (shiftLMultiple (a |+ (funI b c d) |+ ((x!!((7*i) `mod` 16)) |+ (t!!(i)))) s)
 
 class ConvertedToBits a where
     toBits :: a -> [Bool]
