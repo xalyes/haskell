@@ -8,6 +8,7 @@ import Data.Bits
 import Data.List
 import Data.Word
 import Debug.Trace
+import Control.Monad.State
 
 data Byte = Byte Bool Bool Bool Bool Bool Bool Bool Bool
     deriving (Show, Eq)
@@ -40,7 +41,6 @@ bools32ToByte32 x = let
     byte3 = bools8ToByte (take 8 (x))
   in Byte32 byte3 byte2 byte1 byte0
 
-
 word8ToByte :: Word8 -> Byte
 word8ToByte x = bools8ToByte $ toBits x
 
@@ -56,27 +56,30 @@ integerToByte64 x = let
 
 md5 :: String -> String
 md5 str = let
-        (a, b, c, d) = md5Internal (splitEvery 32 (bytesToBools $ prepareStringBytes str)) (toBits a00) (toBits b00) (toBits c00) (toBits d00) 0 (toBits a00) (toBits b00) (toBits c00) (toBits d00)
+        (a, b, c, d) = md5Internal (splitEvery 32 (bytesToBools $ prepareString str)) (toBits a00, toBits b00, toBits c00, toBits d00)
         result = ([showHex' (fromBits i) | i <- reverse $ splitEvery 8 a] ++ [showHex' (fromBits i) | i <- reverse $ splitEvery 8 b]
          ++ [showHex' (fromBits i) | i <- reverse $ splitEvery 8 c] ++ [showHex' (fromBits i) | i <- reverse $ splitEvery 8 d])
     in foldl (.) ("" ++) result $ ""
 
-prepareStringBytes :: String -> [Byte]
-prepareStringBytes str =
+prepareString :: String -> [Byte]
+prepareString str =
     let
         inputStringInBytes = strToBytes str
         len = (genericLength inputStringInBytes) * 8
     in
-        (addLengthBytes len . alignBy448Bytes . convertBytesToLittleEndian . addPaddingBytes) inputStringInBytes
+        (addLength len . alignBy448 . convertBytesToLittleEndian . addPadding) inputStringInBytes
 
-prepareStringByte32 :: String -> [Byte32]
-prepareStringByte32 str = undefined
+md5Step :: State ([[Bool]], Int, [Bool], [Bool], [Bool], [Bool]) ()
+md5Step = state $ \(x, i, a, b, c, d) -> ((), (x, i+1, d, (work x a b c d (s!!i) i), b, c))
 
-md5Internal :: [[Bool]] -> [Bool] -> [Bool] -> [Bool] -> [Bool] -> Int -> [Bool] -> [Bool] -> [Bool] -> [Bool]
-    -> ([Bool], [Bool], [Bool], [Bool])
--- md5Internal x a b c d i a0 b0 c0 d0 | traceShow (fromBits a, fromBits b, fromBits c, fromBits d, i) False = undefined
-md5Internal x a b c d 64 a0 b0 c0 d0 = if length x == 16 then (a |+ a0, b |+ b0, c |+ c0, d |+ d0) else md5Internal (drop 16 x) (a |+ a0) (b |+ b0) (c |+ c0) (d |+ d0) 0 (a |+ a0) (b |+ b0) (c |+ c0) (d |+ d0)
-md5Internal x a b c d i a0 b0 c0 d0 = md5Internal x d (work x a b c d (s!!i) i) b c (i + 1) a0 b0 c0 d0
+md5Internal :: [[Bool]] -> ([Bool], [Bool], [Bool], [Bool]) -> ([Bool], [Bool], [Bool], [Bool])
+md5Internal input (a0, b0, c0, d0) = let
+    (_, _, a, b, c, d) = snd $ runState (replicateM_ 64 md5Step) (input, 0, a0, b0, c0, d0)
+    stepResult = (a |+ a0, b |+ b0, c |+ c0, d |+ d0)
+  in
+    if length input == 16
+    then stepResult
+    else md5Internal (drop 16 input) stepResult
 
 work :: [[Bool]] -> [Bool] -> [Bool] -> [Bool] -> [Bool] -> Int -> Int -> [Bool]
 -- work x a b c d s i | traceShow (fromBits (funF b c d)) False = undefined
@@ -115,11 +118,11 @@ showHex' x =
 convertBytesToLittleEndian :: [Byte] -> [Byte]
 convertBytesToLittleEndian x = (foldl (++) []) . (map reverse) . (splitEvery 4) $ x
 
-addPaddingBytes :: [Byte] -> [Byte]
-addPaddingBytes str | (length str) `mod` 4 == 0 = str ++ [word8ToByte 0x80] ++ [zeroByte, zeroByte, zeroByte]
-                    | (length str) `mod` 4 == 1 = str ++ [word8ToByte 0x80] ++ [zeroByte, zeroByte]
-                    | (length str) `mod` 4 == 2 = str ++ [word8ToByte 0x80] ++ [zeroByte]
-                    | (length str) `mod` 4 == 3 = str ++ [word8ToByte 0x80]
+addPadding :: [Byte] -> [Byte]
+addPadding str | (length str) `mod` 4 == 0 = str ++ [word8ToByte 0x80] ++ [zeroByte, zeroByte, zeroByte]
+               | (length str) `mod` 4 == 1 = str ++ [word8ToByte 0x80] ++ [zeroByte, zeroByte]
+               | (length str) `mod` 4 == 2 = str ++ [word8ToByte 0x80] ++ [zeroByte]
+               | (length str) `mod` 4 == 3 = str ++ [word8ToByte 0x80]
 
 strToBytes :: String -> [Byte]
 strToBytes [] = []
@@ -129,15 +132,15 @@ strToBytes (char:chars) = let
     (Byte32 byte3 byte2 byte1 byte0) = intToByte32 $ ord char
   in (cutZeroBytes [byte3, byte2, byte1, byte0]) ++ strToBytes chars
 
-alignBy448Bytes :: [Byte] -> [Byte]
-alignBy448Bytes bytes = 
+alignBy448 :: [Byte] -> [Byte]
+alignBy448 bytes = 
     let l' = bytes ++ [zeroByte] in
         if ((length l') * 8) `mod` 512 == 448
         then l'
-        else alignBy448Bytes l'
+        else alignBy448 l'
 
-addLengthBytes :: Integer -> [Byte] -> [Byte]
-addLengthBytes len bytes = 
+addLength :: Integer -> [Byte] -> [Byte]
+addLength len bytes = 
     let (Byte64 (Byte32 byte7 byte6 byte5 byte4) (Byte32 byte3 byte2 byte1 byte0)) = integerToByte64 len
     in bytes ++ [byte3, byte2, byte1, byte0, byte7, byte6, byte5, byte4] -- little endian
 
