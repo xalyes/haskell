@@ -50,6 +50,29 @@ md5Step = state $ \(x, i, a, b, c, d) -> ((), (x, i+1, d, (work x a b c d (s!!i)
                    | i < 48 = b |+ (shiftLMultiple (a |+ (funH b c d) |+ ((x!!((3*i + 5) `mod` 16)) |+ (intToByte32 (t!!i)))) s)
                    | i < 64 = b |+ (shiftLMultiple (a |+ (funI b c d) |+ ((x!!((7*i) `mod` 16)) |+ (intToByte32 (t!!i)))) s)
 
+shiftLMultiple :: Byte32 -> Int -> Byte32
+shiftLMultiple (Byte32 byte3 byte2 byte1 byte0) count =
+    let
+        bitsInput = bytesToBools [byte3, byte2, byte1, byte0] 
+        shiftLOne (bit:bits) = bits ++ [bit]
+        shiftLMultiple' bits i = 
+            if i == 1
+            then shiftLOne bits
+            else shiftLMultiple' (shiftLOne bits) (i - 1)
+    in bools32ToByte32 $ shiftLMultiple' bitsInput count
+
+funF :: Byte32 -> Byte32 -> Byte32 -> Byte32
+funF b c d = (b `andByte32` c) `orByte32` ((notByte32 b) `andByte32` d)
+
+funG :: Byte32 -> Byte32 -> Byte32 -> Byte32
+funG b c d = (d `andByte32` b) `orByte32` ((notByte32 d) `andByte32` c)
+
+funH :: Byte32 -> Byte32 -> Byte32 -> Byte32
+funH b c d = (b `xorByte32` c) `xorByte32` d
+
+funI :: Byte32 -> Byte32 -> Byte32 -> Byte32
+funI b c d = c `xorByte32` (b `orByte32` (notByte32 d))
+
 class ConvertedToBits a where
     toBits :: a -> [Bool]
 
@@ -124,28 +147,7 @@ manyBitsSum lhs rhs overflow acc | length acc == length lhs = acc
         (newOverflow, bit) = oneBitSum overflow a b
       in manyBitsSum lhs rhs newOverflow ([bit] ++ acc)
 
-shiftLMultiple :: Byte32 -> Int -> Byte32
-shiftLMultiple (Byte32 byte3 byte2 byte1 byte0) count =
-    let
-        bitsInput = bytesToBools [byte3, byte2, byte1, byte0] 
-        shiftLOne (bit:bits) = bits ++ [bit]
-        shiftLMultiple' bits i = 
-            if i == 1
-            then shiftLOne bits
-            else shiftLMultiple' (shiftLOne bits) (i - 1)
-    in bools32ToByte32 $ shiftLMultiple' bitsInput count
 
-funF :: Byte32 -> Byte32 -> Byte32 -> Byte32
-funF b c d = (b `andByte32` c) `orByte32` ((notByte32 b) `andByte32` d)
-
-funG :: Byte32 -> Byte32 -> Byte32 -> Byte32
-funG b c d = (d `andByte32` b) `orByte32` ((notByte32 d) `andByte32` c)
-
-funH :: Byte32 -> Byte32 -> Byte32 -> Byte32
-funH b c d = (b `xorByte32` c) `xorByte32` d
-
-funI :: Byte32 -> Byte32 -> Byte32 -> Byte32
-funI b c d = c `xorByte32` (b `orByte32` (notByte32 d))
 
 splitEvery :: Int -> [a] -> [[a]]
 splitEvery _ [] = []
