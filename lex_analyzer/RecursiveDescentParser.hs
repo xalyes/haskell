@@ -9,9 +9,12 @@ import Data.List
 import Debug.Trace
 import Control.Monad.State
 
+data Type = Boolean | Integ | Character
+    deriving (Show, Eq)
+
 data Token = Plus | Minus | Div | Mul 
-            | Num Int | NumFloat Double | Id String
-            | More | Less | MoreEq | LessEq | Equal | NotEqual
+            | Num Int | Id String | Type Type
+            | More | Less | MoreEq | LessEq | Equal | NotEqual | LeftBrace | RightBrace | Semicolon
     deriving (Show, Eq)
 
 extractDigit :: String -> Int -> (Int, String)
@@ -20,10 +23,16 @@ extractDigit (x:xs) acc | isDigit x = extractDigit xs (acc*10 + (digitToInt x))
                         | isLetter x = error "Syntax error: number before letter"
                         | otherwise = (acc, (x:xs))
 
-extractWord :: String -> String -> (String, String)
-extractWord [] acc = (acc, [])
+extractWord :: String -> String -> (Token, String)
+extractWord [] acc = case acc of  "bool" -> (Type Boolean, [])
+                                  "int"  -> (Type Integ, [])
+                                  "char" -> (Type Character, [])
+                                  _      -> (Id acc, [])
 extractWord (x:xs) acc | isLetter x || isDigit x = extractWord xs (acc ++ [x])
-                       | otherwise = (acc, (x:xs))
+                       | otherwise = case acc of  "bool" -> (Type Boolean, (x:xs))
+                                                  "int"  -> (Type Integ, (x:xs))
+                                                  "char" -> (Type Character, (x:xs))
+                                                  _      -> (Id acc, (x:xs))
 
 waitSymbol :: Char -> String -> String
 waitSymbol ch [] = error "Syntax error: unclosed comment"
@@ -39,12 +48,15 @@ skipComment (x:xs) | x == '*'  = case waitSymbol '*' xs of []       -> error "Sy
 scanInternal :: String -> [Token] -> [Token]
 scanInternal [] tokens                             = tokens
 scanInternal (x:xs) tokens | x == ' ' || x == '\t' || x == '\n' = scanInternal xs tokens
+                   | x == ';'                           = tokens ++ [Semicolon] ++ scanInternal xs []
+                   | x == '{'                           = tokens ++ [LeftBrace] ++ scanInternal xs []
+                   | x == '}'                           = tokens ++ [RightBrace] ++ scanInternal xs []
                    | x == '+'                           = tokens ++ [Plus] ++ scanInternal xs []
                    | x == '-'                           = tokens ++ [Minus] ++ scanInternal xs []
                    | isDigit x                          = let (digit, rest) = extractDigit xs (digitToInt x)
                                                              in tokens ++ [Num digit] ++ scanInternal rest []
                    | isLetter x                         = let (word, rest) = extractWord xs [x]
-                                                             in tokens ++ [Id word] ++ scanInternal rest []
+                                                             in tokens ++ [word] ++ scanInternal rest []
                    | x == '/' && xs /= [] && (head xs == '*' || head xs == '/') = scanInternal (skipComment xs) tokens
                    | x == '/'                           = tokens ++ [Div] ++ scanInternal xs []
                    | x == '*'                           = tokens ++ [Mul] ++ scanInternal xs []
@@ -58,37 +70,51 @@ scanInternal (x:xs) tokens | x == ' ' || x == '\t' || x == '\n' = scanInternal x
 
 scan str = scanInternal str []
 
-parseInternal1 :: String -> Int -> (String, Bool)
-parseInternal1 [] (-1) = ([], True)
-parseInternal1 [] _ = ([], False)
-parseInternal1 (x:xs) n | x == '+' = let (str, res) = parseInternal1 xs (n+1) in
-                    if res then parseInternal1 str (n+1) else (str, False)
-               | x == '-' = let (str, res) = parseInternal1 xs (n+1) in
-                    if res then parseInternal1 str (n+1) else (str, False)
-               | x == 'a' = (xs, True)
-               | otherwise = ((x:xs), False)
+data SyntaxElement = Root | Block | Statement String | Declaration Type String
+    deriving (Show, Eq)
 
-parseInternal2 :: String -> Int -> (String, Bool)
-parseInternal2 [] (-1) = ([], True)
-parseInternal2 [] 0 = ([], True)
-parseInternal2 [] _ = ([], False)
-parseInternal2 (x:xs) n
-               | x == '(' = let ((str), res) = parseInternal2 xs (n+1) in
-                    if res && (str /= []) && (head str == ')') then parseInternal2 (tail str) n else (str, False)
-               | otherwise = ((x:xs), True)
+data SyntaxTree = Nil | Node SyntaxElement [(SyntaxTree)]
+    deriving (Eq, Show)
 
-parseInternal3 :: String -> Int -> (String, Bool)
-parseInternal3 [] (-1) = ([], True)
-parseInternal3 [] 0 = ([], False)
-parseInternal3 [] _ = ([], False)
-parseInternal3 (x:xs) n
-               | x == '0' && length xs /= 0 && (head xs) == '1' = (tail xs, True)
-               | x == '0' = let (str, res) = parseInternal3 xs (n+1) in
-                    if res && (str /= []) && (head str == '1') then 
-                        if tail str == [] && n == 0 then ([], True) else parseInternal3 (tail str) n
-                    else (str, False)
-               | otherwise = ((x:xs), True)
+{-
+showNode len (Node root childs) acc = let
+        value = show root
+        filler = concat $ take ((len - (length value)) `div` 2) $ repeat " "
+    in acc ++ filler ++ value ++ filler
 
-parse :: String -> Maybe String
-parse str = let (str', res) = parseInternal3 str 0 in
-    if res && (str' == []) then Nothing else Just ("Syntax error around " ++ str' ++ ".")
+show' :: Int -> SyntaxTree -> String -> String
+show' len (Node root childs) acc = let 
+        childsCount = length childs
+    in acc ++ foldr (show' (len `div` childsCount)) (foldr (showNode (len `div` childsCount)) "" childs) childs
+
+instance Show SyntaxTree where
+    show tree = show' 300 tree ""
+-}
+
+parseType :: [Token] -> Type -> (SyntaxTree, [Token])
+parseType tokens typ = case tokens of
+                   ((Id name):Semicolon:xs) -> (Node (Declaration typ name) [], xs)
+                   _         -> error "Syntax error: failed to parse type"
+
+parseStatement :: [Token] -> String -> (SyntaxTree, [Token])
+parseStatement tokens name = case tokens of
+                   (Semicolon:xs) -> (Node (Statement name) [], xs)
+                   _         -> error "Syntax error: failed to parse statement"
+
+parse :: [Token] -> SyntaxTree -> (SyntaxTree, [Token])
+parse [] tree = (tree, [])
+parse (x:xs) (Node root childs) = case x of
+                                   LeftBrace -> let
+                                                    (tree, rest) = parse xs (Node Block [])
+                                                in parse rest (Node root (childs ++ [tree]))
+                                   Id str -> let
+                                                 (tree, rest) = parseStatement xs str
+                                             in parse rest (Node root (childs ++ [tree]))
+                                   RightBrace -> ((Node root childs), xs)
+                                   Type typ -> let
+                                                   (tree, rest) = parseType xs typ
+                                               in parse rest (Node root (childs ++ [tree]))
+                                   _ -> parse xs (Node root childs)
+
+
+
