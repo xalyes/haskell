@@ -7,15 +7,22 @@ import Data.Char
 import Data.Bits
 import Data.List
 import Debug.Trace
-import Control.Monad.State
+import Control.Monad.Writer
+import qualified Data.Map as Map
 
 data Type = Boolean | Integ | Character
-    deriving (Show, Eq)
+    deriving (Eq, Ord)
+
+instance Show Type where
+    show typ = case typ of
+                Boolean -> "bool"
+                Integ -> "int"
+                Character -> "char"
 
 data Token = Plus | Minus | Div | Mul 
             | Num Int | Id String | Type Type
             | More | Less | MoreEq | LessEq | Equal | NotEqual | LeftBrace | RightBrace | Semicolon
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 extractDigit :: String -> Int -> (Int, String)
 extractDigit [] acc = (acc, [])
@@ -91,30 +98,54 @@ instance Show SyntaxTree where
     show tree = show' 300 tree ""
 -}
 
-parseType :: [Token] -> Type -> (SyntaxTree, [Token])
-parseType tokens typ = case tokens of
-                   ((Id name):Semicolon:xs) -> (Node (Declaration typ name) [], xs)
-                   _         -> error "Syntax error: failed to parse type"
+type SymbolTable = Map.Map Token Type
 
-parseStatement :: [Token] -> String -> (SyntaxTree, [Token])
-parseStatement tokens name = case tokens of
-                   (Semicolon:xs) -> (Node (Statement name) [], xs)
+findSymbol :: [SymbolTable] -> Token -> Type
+findSymbol [] token = error ("Syntax error: undefined symbol " ++ (show token))
+findSymbol (x:xs) token = case (Map.lookup token x) of
+                            Just m -> m
+                            Nothing -> findSymbol xs token
+
+parseDecl :: [Token] -> Type -> [SymbolTable] -> ([SymbolTable], (Writer String (SyntaxTree, [Token])))
+parseDecl tokens typ (s:symbols) = case tokens of
+                   ((Id name):Semicolon:xs) -> (((Map.insert (Id name) typ s):symbols), (return (Node (Declaration typ name) [], xs)))
+                   _         -> error "Syntax error: failed to parse declaration"
+
+parseStatement :: [Token] -> String -> [SymbolTable] -> (Writer String (SyntaxTree, [Token]))
+parseStatement tokens name symbols = case tokens of
+                   (Semicolon:xs) -> do
+                        tell ((concat  $ take (length symbols) $ repeat "    ") ++ show (findSymbol symbols (Id name)) ++ "::" ++ name ++ ";\n")
+                        return (Node (Statement name) [], xs)
                    _         -> error "Syntax error: failed to parse statement"
 
-parse :: [Token] -> SyntaxTree -> (SyntaxTree, [Token])
-parse [] tree = (tree, [])
-parse (x:xs) (Node root childs) = case x of
+parseBlock :: [Token] -> [SymbolTable] -> (Writer String (SyntaxTree, [Token]))
+parseBlock tokens symbols = do
+    tell ((concat  $ take (length symbols) $ repeat "    ") ++ "{\n")
+    parse tokens (Node Block []) (Map.empty:symbols)
+
+parse :: [Token] -> SyntaxTree -> [SymbolTable] -> (Writer String (SyntaxTree, [Token]))
+parse [] tree _ = return (tree, [])
+parse (x:xs) (Node root childs) symbols = case x of
                                    LeftBrace -> let
-                                                    (tree, rest) = parse xs (Node Block [])
-                                                in parse rest (Node root (childs ++ [tree]))
+                                                    ((tree, rest), log) = runWriter $ parseBlock xs symbols
+                                                in do
+                                                    tell log
+                                                    parse rest (Node root (childs ++ [tree])) symbols
                                    Id str -> let
-                                                 (tree, rest) = parseStatement xs str
-                                             in parse rest (Node root (childs ++ [tree]))
-                                   RightBrace -> ((Node root childs), xs)
+                                                 ((tree, rest), log) = runWriter $ parseStatement xs str symbols
+                                             in do
+                                                tell log
+                                                parse rest (Node root (childs ++ [tree])) symbols
+                                   RightBrace -> do
+                                                   tell ((concat  $ take ((length symbols) - 1)  $ repeat "    ") ++ "}\n")
+                                                   return ((Node root childs), xs)
                                    Type typ -> let
-                                                   (tree, rest) = parseType xs typ
-                                               in parse rest (Node root (childs ++ [tree]))
-                                   _ -> parse xs (Node root childs)
+                                                   (symTable, wr) = parseDecl xs typ symbols
+                                                   ((tree, rest), log) = runWriter $ wr
+                                               in do
+                                                tell log
+                                                parse rest (Node root (childs ++ [tree])) symTable
+                                   _ -> parse xs (Node root childs) symbols
 
-
-
+parseProgram :: String -> String
+parseProgram str = snd $ runWriter $ parse (scan str) (Node Root []) []
