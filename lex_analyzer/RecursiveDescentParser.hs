@@ -8,6 +8,7 @@ import Data.Bits
 import Data.List
 import Debug.Trace
 import Control.Monad.Writer
+import System.IO
 import qualified Data.Map as Map
 
 data Type = Boolean | Integ | Character
@@ -83,21 +84,6 @@ data SyntaxElement = Root | Block | Statement String | Declaration Type String
 data SyntaxTree = Nil | Node SyntaxElement [(SyntaxTree)]
     deriving (Eq, Show)
 
-{-
-showNode len (Node root childs) acc = let
-        value = show root
-        filler = concat $ take ((len - (length value)) `div` 2) $ repeat " "
-    in acc ++ filler ++ value ++ filler
-
-show' :: Int -> SyntaxTree -> String -> String
-show' len (Node root childs) acc = let 
-        childsCount = length childs
-    in acc ++ foldr (show' (len `div` childsCount)) (foldr (showNode (len `div` childsCount)) "" childs) childs
-
-instance Show SyntaxTree where
-    show tree = show' 300 tree ""
--}
-
 type SymbolTable = Map.Map Token Type
 
 findSymbol :: [SymbolTable] -> Token -> Type
@@ -149,3 +135,42 @@ parse (x:xs) (Node root childs) symbols = case x of
 
 parseProgram :: String -> String
 parseProgram str = snd $ runWriter $ parse (scan str) (Node Root []) []
+
+translateList :: [SyntaxTree] -> [SymbolTable] -> String -> (Writer String [SymbolTable])
+translateList [] symbols out = do
+                            tell out
+                            return symbols
+translateList (x:xs) symbols out = let
+                                      (outSymbols, log) = runWriter $ translate x symbols out
+                                   in translateList xs outSymbols log
+
+translate :: SyntaxTree -> [SymbolTable] -> String -> (Writer String [SymbolTable])
+translate Nil _ _ = return []
+translate (Node elem []) (sym:symbols) out = case elem of
+                                                (Declaration t name) -> do
+                                                    tell out
+                                                    return ((Map.insert (Id name) t sym):symbols)
+                                                (Statement stmt)     -> do
+                                                    tell (out ++ ((concat  $ take ((length symbols) + 1) $ repeat "    ") ++ show (findSymbol (sym:symbols) (Id stmt)) ++ "::" ++ stmt ++ ";\n"))
+                                                    return (sym:symbols)
+                                                Block                -> do
+                                                    tell (out ++ (concat  $ take (length (sym:symbols)) $ repeat "    ") ++ "{}\n")
+                                                    return (sym:symbols)
+                                                Root                 -> do
+                                                    tell out
+                                                    return (sym:symbols)
+translate (Node elem (child:childs)) symbols out = case elem of
+                                                    Block -> let
+                                                                (outSymbols, log) = runWriter $ translateList (child:childs) (Map.empty:symbols) ""
+                                                             in do 
+                                                                tell (out ++ (concat  $ take (length symbols) $ repeat "    ") ++ "{\n" ++ log ++ (concat  $ take (length symbols) $ repeat "    ") ++ "}\n")
+                                                                return symbols
+                                                    Root  -> let
+                                                                (outSymbols, log) = runWriter $ translateList (child:childs) (symbols) out
+                                                             in do 
+                                                                tell log
+                                                                return outSymbols
+                                                    _     -> error "Syntax error: unexpected syntax element with childs"
+
+translatePretty str = hPutStrLn stdout $ snd $ runWriter $ translate (fst $ fst $ runWriter $ parse (scan $ str) (Node Root []) []) [] ""
+
