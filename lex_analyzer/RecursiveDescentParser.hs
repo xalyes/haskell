@@ -192,7 +192,8 @@ parse (x:xs) (Node root childs) = case x of
 parseProgram :: String -> String
 parseProgram str = snd $ runWriter $ parse (scan str) (Node Root [])
 
-
+data ServiceInformation = ServiceInformation Int
+    deriving (Show, Eq)
 type SymbolTable = Map.Map Token Type
 
 findSymbol :: [SymbolTable] -> Token -> Type
@@ -201,63 +202,78 @@ findSymbol (x:xs) token = case (Map.lookup token x) of
                             Just m -> m
                             Nothing -> findSymbol xs token
 
-translateList :: [SyntaxTree] -> [SymbolTable] -> String -> (Writer String [SymbolTable])
-translateList [] symbols out = do
+translateList :: [SyntaxTree] -> ServiceInformation -> [SymbolTable] -> String -> (Writer String ([SymbolTable], ServiceInformation))
+translateList [] info symbols out = do
                             tell out
-                            return symbols
-translateList (x:xs) symbols out = let
-                                      (outSymbols, log) = runWriter $ translate x symbols out
-                                   in translateList xs outSymbols log
+                            return (symbols, info)
+translateList (x:xs) info symbols out = let
+                                      ((outSymbols, info'), log) = runWriter $ translate x info symbols out
+                                   in translateList xs info' outSymbols log
 
-translateFactor :: [SymbolTable] -> Factor -> String
-translateFactor symbols (FactorNum num)   = show num
-translateFactor symbols (FactorStr str)   = (show $ findSymbol symbols (Id str)) ++ "::" ++ str
-translateFactor symbols (FactorExpr expr) = "(" ++ (translateExpression symbols expr) ++ ")"
+translateFactor :: ServiceInformation -> [SymbolTable] -> Factor -> (String, String, ServiceInformation)
+translateFactor info symbols (FactorNum num)   = ("", show num, info)
+translateFactor info symbols (FactorStr str)   = ("", (show $ findSymbol symbols (Id str)) ++ "::" ++ str, info)
+translateFactor info symbols (FactorExpr expr) = translateExpression info symbols expr
 
-translateTerm :: [SymbolTable] -> Term -> String
-translateTerm symbols (TermFactor factor)   = translateFactor symbols factor
-translateTerm symbols (TermMul factor term) = translateFactor symbols factor ++ " * " ++ translateTerm symbols term
+translateTerm :: ServiceInformation -> [SymbolTable] -> Term -> (String, String, ServiceInformation)
+-- translateTerm _ _ expr | traceShow (expr) False = undefined
+translateTerm info symbols (TermFactor factor)   = translateFactor info symbols factor
+translateTerm info symbols (TermMul factor term) = let (out, var, info') = translateFactor info symbols factor
+                                                       (out', var', (ServiceInformation i)) = translateTerm info' symbols term
+                                                       varNew = "t" ++ (show (i + 1))
+                                                   in (out ++ out' ++ varNew ++ " = " ++ var ++ " * " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
 
-translateAdd :: [SymbolTable] -> Add -> String
-translateAdd symbols (AddTerm term)     = translateTerm symbols term
-translateAdd symbols (AddPlus term add) = translateTerm symbols term ++ " + " ++ translateAdd symbols add
+translateAdd :: ServiceInformation -> [SymbolTable] -> Add -> (String, String, ServiceInformation)
+translateAdd info symbols (AddTerm term)     = translateTerm info symbols term
+translateAdd info symbols (AddPlus term add) = let (out, var, info') = translateTerm info symbols term
+                                                   (out', var', (ServiceInformation i)) = translateAdd info' symbols add
+                                                   varNew = "t" ++ (show (i + 1))
+                                               in (out ++ out' ++ varNew ++ " = " ++ var ++ " + " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
 
-translateRel :: [SymbolTable] -> Rel -> String
-translateRel symbols (RelAdd add)        = translateAdd symbols add
-translateRel symbols (RelLess add rel)   = translateAdd symbols add ++ " < " ++ translateRel symbols rel
-translateRel symbols (RelLessEq add rel) = translateAdd symbols add ++ " <= " ++ translateRel symbols rel
+translateRel :: ServiceInformation -> [SymbolTable] -> Rel -> (String, String, ServiceInformation)
+translateRel info symbols (RelAdd add)        = translateAdd info symbols add
+translateRel info symbols (RelLess add rel)   = let (out, var, info') = translateAdd info symbols add
+                                                    (out', var', (ServiceInformation i)) = translateRel info' symbols rel
+                                                    varNew = "t" ++ (show (i + 1))
+                                                in (out ++ out' ++ varNew ++ " = " ++ var ++ " < " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
+translateRel info symbols (RelLessEq add rel) = let (out, var, info') = translateAdd info symbols add
+                                                    (out', var', (ServiceInformation i)) = translateRel info' symbols rel
+                                                    varNew = "t" ++ (show (i + 1))
+                                                in (out ++ out' ++ varNew ++ " = " ++ var ++ " <= " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
 
-translateExpression :: [SymbolTable] -> Expression -> String
-translateExpression symbols (ExprRel rel)         = translateRel symbols rel
-translateExpression symbols (ExprAssign rel expr) = translateRel symbols rel ++ " = " ++ (translateExpression symbols expr)
+translateExpression :: ServiceInformation -> [SymbolTable] -> Expression -> (String, String, ServiceInformation)
+translateExpression info symbols (ExprRel rel)         = translateRel info symbols rel
+translateExpression info symbols (ExprAssign rel expr) = let (out, var, info') = translateRel info symbols rel
+                                                             (out', var', info'') = translateExpression info' symbols expr
+                                                         in (out ++ out' ++ var ++ " = " ++ (var') ++ "\n", "", info'')
 
-translate :: SyntaxTree -> [SymbolTable] -> String -> (Writer String [SymbolTable])
-translate Nil _ _ = return []
-translate (Node elem []) (sym:symbols) out = case elem of
+translate :: SyntaxTree -> ServiceInformation -> [SymbolTable] -> String -> (Writer String ([SymbolTable], ServiceInformation))
+translate Nil i _ _ = return ([], i)
+translate (Node elem []) info (sym:symbols) out = case elem of
                                                 (Declaration t name) -> do
                                                     tell out
-                                                    return ((Map.insert (Id name) t sym):symbols)
-                                                (Statement (StatementExpr expr))     -> do
-                                                    tell (out ++ (concat  $ take ((length symbols) + 1) $ repeat "    ") ++ (translateExpression (sym:symbols) expr) ++ ";\n")
-                                                    return (sym:symbols)
+                                                    return (((Map.insert (Id name) t sym):symbols), info)
+                                                (Statement (StatementExpr expr))     -> let (out, var, inf) = translateExpression info (sym:symbols) expr in do
+                                                    tell out
+                                                    return ((sym:symbols), inf)
                                                 Block                -> do
                                                     tell (out ++ (concat  $ take (length (sym:symbols)) $ repeat "    ") ++ "{}\n")
-                                                    return (sym:symbols)
+                                                    return ((sym:symbols), info)
                                                 Root                 -> do
                                                     tell out
-                                                    return (sym:symbols)
-translate (Node elem (child:childs)) symbols out = case elem of
+                                                    return ((sym:symbols), info)
+translate (Node elem (child:childs)) info symbols out = case elem of
                                                     Block -> let
-                                                                (outSymbols, log) = runWriter $ translateList (child:childs) (Map.empty:symbols) ""
+                                                                ((outSymbols, info'), log) = runWriter $ translateList (child:childs) info (Map.empty:symbols) ""
                                                              in do 
                                                                 tell (out ++ (concat  $ take (length symbols) $ repeat "    ") ++ "{\n" ++ log ++ (concat  $ take (length symbols) $ repeat "    ") ++ "}\n")
-                                                                return symbols
+                                                                return (symbols, info')
                                                     Root  -> let
-                                                                (outSymbols, log) = runWriter $ translateList (child:childs) (symbols) out
+                                                                ((outSymbols, info'), log) = runWriter $ translateList (child:childs) info (symbols) out
                                                              in do 
                                                                 tell log
-                                                                return outSymbols
+                                                                return (outSymbols, info')
                                                     _     -> error "Syntax error: unexpected syntax element with childs"
 
-translatePretty str = hPutStrLn stdout $ snd $ runWriter $ translate (fst $ fst $ runWriter $ parse (scan $ str) (Node Root [])) [] ""
+translatePretty str = hPutStrLn stdout $ snd $ runWriter $ translate (fst $ fst $ runWriter $ parse (scan $ str) (Node Root [])) (ServiceInformation 0) [] ""
 
