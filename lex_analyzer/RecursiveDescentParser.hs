@@ -21,8 +21,9 @@ instance Show Type where
                 Character -> "char"
 
 data Token = Plus | Minus | Div | Mul 
-            | Num Int | Id String | Type Type
-            | More | Less | MoreEq | LessEq | Equal | NotEqual | LeftBrace | RightBrace | Semicolon | Assign | LeftParenthese | RightParenthese
+            | More | Less | MoreEq | LessEq | Equal | NotEqual 
+            | Num Int | Id String | Type Type | If
+            | LeftBrace | RightBrace | Semicolon | Assign | LeftParenthese | RightParenthese
     deriving (Show, Eq, Ord)
 
 extractDigit :: String -> Int -> (Int, String)
@@ -35,11 +36,13 @@ extractWord :: String -> String -> (Token, String)
 extractWord [] acc = case acc of  "bool" -> (Type Boolean, [])
                                   "int"  -> (Type Integ, [])
                                   "char" -> (Type Character, [])
+                                  "if"   -> (If, [])
                                   _      -> (Id acc, [])
 extractWord (x:xs) acc | isLetter x || isDigit x = extractWord xs (acc ++ [x])
                        | otherwise = case acc of  "bool" -> (Type Boolean, (x:xs))
                                                   "int"  -> (Type Integ, (x:xs))
                                                   "char" -> (Type Character, (x:xs))
+                                                  "if"   -> (If, (x:xs))
                                                   _      -> (Id acc, (x:xs))
 
 waitSymbol :: Char -> String -> String
@@ -96,7 +99,7 @@ data Rel = RelLess Add Rel | RelLessEq Add Rel | RelAdd Add
 data Expression = ExprRel Rel | ExprAssign Rel Expression
     deriving (Show, Eq)
 
-data Statement = StatementExpr Expression | If Expression Statement | While Expression Statement | DoWhile Statement Expression
+data Statement = StatementExpr Expression | StmtIf Expression SyntaxTree | While Expression Statement | DoWhile Statement Expression
     deriving (Show, Eq)
 
 data SyntaxElement = Root | Block | Statement Statement | Declaration Type String
@@ -111,6 +114,7 @@ parseDecl tokens typ = case tokens of
                    _         -> error "Syntax error: failed to parse declaration"
 
 parseFactor :: [Token] -> (Factor, [Token])
+-- parseFactor expr | traceShow (expr) False = undefined
 parseFactor (x:xs) = case x of
                         (Num num)      -> (FactorNum num, xs)
                         (Id str)       -> (FactorStr str, xs)
@@ -151,10 +155,20 @@ parseExpression tokens = let (rel, rest) = parseRel tokens
                         _           -> (ExprRel rel, rest)
 
 parseStatement :: [Token] -> (SyntaxTree, [Token])
-parseStatement tokens = let (expr, rest) = parseExpression tokens
-                        in case rest of
-                            (Semicolon:xs) -> (Node (Statement (StatementExpr expr)) [], xs)
-                            _              -> error "Syntax error: failed to parse statement"
+parseStatement []         = error "Syntax error: failed to parse statement - unexpected end"
+parseStatement (t:tokens) | t == If   = case tokens of
+                                            (LeftParenthese:tokens') -> let (expr, rest) = parseExpression tokens'
+                                                                        in case rest of
+                                                                            (RightParenthese:LeftBrace:xs) -> let ((tree, rest'), _) = runWriter $ parseBlock xs 
+                                                                                                              in (Node (Statement (StmtIf expr tree)) [], rest')
+                                                                            (RightParenthese:xs) -> let (expr, rest') = parseExpression xs
+                                                                                                    in (Node (Statement (StmtIf expr (Node (Statement (StatementExpr expr)) []))) [], rest')
+                                                                            _ -> error "Syntax error: failed to parse statement - failed to find match parenthese in the if statement"
+                                            _ -> error "Syntax error: failed to parse statement - no parenthese after 'if' keyword"
+                          | otherwise = let (expr, rest) = parseExpression (t:tokens)
+                                        in case rest of
+                                            (Semicolon:xs) -> (Node (Statement (StatementExpr expr)) [], xs)
+                                            _              -> error "Syntax error: failed to parse statement"
 
 parseBlock :: [Token] -> (Writer String (SyntaxTree, [Token]))
 parseBlock tokens = do
@@ -168,6 +182,11 @@ parse (x:xs) (Node root childs) = case x of
                                                     ((tree, rest), log) = runWriter $ parseBlock xs
                                                 in do
                                                     tell log
+                                                    parse rest (Node root (childs ++ [tree]))
+                                   If        -> let
+                                                 (tree, rest) = parseStatement (x:xs)
+                                                in do
+                                                    tell ""
                                                     parse rest (Node root (childs ++ [tree]))
                                    Id _      -> let
                                                  (tree, rest) = parseStatement (x:xs)
@@ -245,7 +264,7 @@ translateExpression :: ServiceInformation -> [SymbolTable] -> Expression -> (Str
 translateExpression info symbols (ExprRel rel)         = translateRel info symbols rel
 translateExpression info symbols (ExprAssign rel expr) = let (out, var, info') = translateRel info symbols rel
                                                              (out', var', info'') = translateExpression info' symbols expr
-                                                         in (out ++ out' ++ var ++ " = " ++ (var') ++ "\n", "", info'')
+                                                         in (out ++ out' ++ var ++ " = " ++ (var') ++ "\n", var, info'')
 
 translate :: SyntaxTree -> ServiceInformation -> [SymbolTable] -> String -> (Writer String ([SymbolTable], ServiceInformation))
 translate Nil i _ _ = return ([], i)
@@ -253,9 +272,15 @@ translate (Node elem []) info (sym:symbols) out = case elem of
                                                 (Declaration t name) -> do
                                                     tell out
                                                     return (((Map.insert (Id name) t sym):symbols), info)
-                                                (Statement (StatementExpr expr))     -> let (out, var, inf) = translateExpression info (sym:symbols) expr in do
-                                                    tell out
+                                                (Statement (StatementExpr expr))     -> let (out', _, inf) = translateExpression info (sym:symbols) expr in do
+                                                    tell (out ++ out')
                                                     return ((sym:symbols), inf)
+                                                (Statement (StmtIf expr stmt))       -> let
+                                                        (out', var, inf) = translateExpression info (sym:symbols) expr
+                                                        ((symbols', inf'), out'')              = runWriter $ translate stmt inf (sym:symbols) ""
+                                                    in do
+                                                        tell (out ++ out' ++ "ifFalse " ++ var ++ " goto L\n" ++ out'' ++ "L: ")
+                                                        return (symbols', inf')
                                                 Block                -> do
                                                     tell (out ++ (concat  $ take (length (sym:symbols)) $ repeat "    ") ++ "{}\n")
                                                     return ((sym:symbols), info)
