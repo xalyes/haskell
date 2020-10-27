@@ -22,7 +22,7 @@ instance Show Type where
 
 data Token = Plus | Minus | Div | Mul 
             | More | Less | MoreEq | LessEq | Equal | NotEqual 
-            | Num Int | Id String | Type Type | If
+            | Num Int | Id String | Type Type | If | While
             | LeftBrace | RightBrace | Semicolon | Assign | LeftParenthese | RightParenthese
     deriving (Show, Eq, Ord)
 
@@ -37,12 +37,14 @@ extractWord [] acc = case acc of  "bool" -> (Type Boolean, [])
                                   "int"  -> (Type Integ, [])
                                   "char" -> (Type Character, [])
                                   "if"   -> (If, [])
+                                  "while"-> (While, [])
                                   _      -> (Id acc, [])
 extractWord (x:xs) acc | isLetter x || isDigit x = extractWord xs (acc ++ [x])
                        | otherwise = case acc of  "bool" -> (Type Boolean, (x:xs))
                                                   "int"  -> (Type Integ, (x:xs))
                                                   "char" -> (Type Character, (x:xs))
                                                   "if"   -> (If, (x:xs))
+                                                  "while"-> (While, (x:xs))
                                                   _      -> (Id acc, (x:xs))
 
 waitSymbol :: Char -> String -> String
@@ -99,7 +101,7 @@ data Rel = RelLess Add Rel | RelLessEq Add Rel | RelAdd Add
 data Expression = ExprRel Rel | ExprAssign Rel Expression
     deriving (Show, Eq)
 
-data Statement = StatementExpr Expression | StmtIf Expression SyntaxTree | While Expression Statement | DoWhile Statement Expression
+data Statement = StatementExpr Expression | StmtIf Expression SyntaxTree | StmtWhile Expression SyntaxTree | DoWhile Statement Expression
     deriving (Show, Eq)
 
 data SyntaxElement = Root | Block | Statement Statement | Declaration Type String
@@ -165,6 +167,15 @@ parseStatement (t:tokens) | t == If   = case tokens of
                                                                                                     in (Node (Statement (StmtIf expr (Node (Statement (StatementExpr expr)) []))) [], rest')
                                                                             _ -> error "Syntax error: failed to parse statement - failed to find match parenthese in the if statement"
                                             _ -> error "Syntax error: failed to parse statement - no parenthese after 'if' keyword"
+                          | t == While   = case tokens of
+                                            (LeftParenthese:tokens') -> let (expr, rest) = parseExpression tokens'
+                                                                        in case rest of
+                                                                            (RightParenthese:LeftBrace:xs) -> let ((tree, rest'), _) = runWriter $ parseBlock xs 
+                                                                                                              in (Node (Statement (StmtWhile expr tree)) [], rest')
+                                                                            (RightParenthese:xs) -> let (expr, rest') = parseExpression xs
+                                                                                                    in (Node (Statement (StmtWhile expr (Node (Statement (StatementExpr expr)) []))) [], rest')
+                                                                            _ -> error "Syntax error: failed to parse statement - failed to find match parenthese in the 'while' statement"
+                                            _ -> error "Syntax error: failed to parse statement - no parenthese after 'while' keyword"
                           | otherwise = let (expr, rest) = parseExpression (t:tokens)
                                         in case rest of
                                             (Semicolon:xs) -> (Node (Statement (StatementExpr expr)) [], xs)
@@ -184,6 +195,11 @@ parse (x:xs) (Node root childs) = case x of
                                                     tell log
                                                     parse rest (Node root (childs ++ [tree]))
                                    If        -> let
+                                                 (tree, rest) = parseStatement (x:xs)
+                                                in do
+                                                    tell ""
+                                                    parse rest (Node root (childs ++ [tree]))
+                                   While     -> let
                                                  (tree, rest) = parseStatement (x:xs)
                                                 in do
                                                     tell ""
@@ -211,7 +227,7 @@ parse (x:xs) (Node root childs) = case x of
 parseProgram :: String -> String
 parseProgram str = snd $ runWriter $ parse (scan str) (Node Root [])
 
-data ServiceInformation = ServiceInformation Int
+data ServiceInformation = ServiceInformation Int Int
     deriving (Show, Eq)
 type SymbolTable = Map.Map Token Type
 
@@ -238,27 +254,27 @@ translateTerm :: ServiceInformation -> [SymbolTable] -> Term -> (String, String,
 -- translateTerm _ _ expr | traceShow (expr) False = undefined
 translateTerm info symbols (TermFactor factor)   = translateFactor info symbols factor
 translateTerm info symbols (TermMul factor term) = let (out, var, info') = translateFactor info symbols factor
-                                                       (out', var', (ServiceInformation i)) = translateTerm info' symbols term
+                                                       (out', var', (ServiceInformation i j)) = translateTerm info' symbols term
                                                        varNew = "t" ++ (show (i + 1))
-                                                   in (out ++ out' ++ varNew ++ " = " ++ var ++ " * " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
+                                                   in (out ++ out' ++ varNew ++ " = " ++ var ++ " * " ++ (var') ++ "\n", varNew, ServiceInformation (i+1) j)
 
 translateAdd :: ServiceInformation -> [SymbolTable] -> Add -> (String, String, ServiceInformation)
 translateAdd info symbols (AddTerm term)     = translateTerm info symbols term
 translateAdd info symbols (AddPlus term add) = let (out, var, info') = translateTerm info symbols term
-                                                   (out', var', (ServiceInformation i)) = translateAdd info' symbols add
+                                                   (out', var', (ServiceInformation i j)) = translateAdd info' symbols add
                                                    varNew = "t" ++ (show (i + 1))
-                                               in (out ++ out' ++ varNew ++ " = " ++ var ++ " + " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
+                                               in (out ++ out' ++ varNew ++ " = " ++ var ++ " + " ++ (var') ++ "\n", varNew, ServiceInformation (i+1) j)
 
 translateRel :: ServiceInformation -> [SymbolTable] -> Rel -> (String, String, ServiceInformation)
 translateRel info symbols (RelAdd add)        = translateAdd info symbols add
 translateRel info symbols (RelLess add rel)   = let (out, var, info') = translateAdd info symbols add
-                                                    (out', var', (ServiceInformation i)) = translateRel info' symbols rel
+                                                    (out', var', (ServiceInformation i j)) = translateRel info' symbols rel
                                                     varNew = "t" ++ (show (i + 1))
-                                                in (out ++ out' ++ varNew ++ " = " ++ var ++ " < " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
+                                                in (out ++ out' ++ varNew ++ " = " ++ var ++ " < " ++ (var') ++ "\n", varNew, ServiceInformation (i+1) j)
 translateRel info symbols (RelLessEq add rel) = let (out, var, info') = translateAdd info symbols add
-                                                    (out', var', (ServiceInformation i)) = translateRel info' symbols rel
+                                                    (out', var', (ServiceInformation i j)) = translateRel info' symbols rel
                                                     varNew = "t" ++ (show (i + 1))
-                                                in (out ++ out' ++ varNew ++ " = " ++ var ++ " <= " ++ (var') ++ "\n", varNew, ServiceInformation (i+1))
+                                                in (out ++ out' ++ varNew ++ " = " ++ var ++ " <= " ++ (var') ++ "\n", varNew, ServiceInformation (i+1) j)
 
 translateExpression :: ServiceInformation -> [SymbolTable] -> Expression -> (String, String, ServiceInformation)
 translateExpression info symbols (ExprRel rel)         = translateRel info symbols rel
@@ -269,20 +285,31 @@ translateExpression info symbols (ExprAssign rel expr) = let (out, var, info') =
 translate :: SyntaxTree -> ServiceInformation -> [SymbolTable] -> String -> (Writer String ([SymbolTable], ServiceInformation))
 translate Nil i _ _ = return ([], i)
 translate (Node elem []) info (sym:symbols) out = case elem of
-                                                (Declaration t name) -> do
-                                                    tell out
-                                                    return (((Map.insert (Id name) t sym):symbols), info)
+                                                (Declaration t name) -> case Map.lookup (Id name) sym of 
+                                                                            (Just _) -> error ("Syntax error: multiple declaration of '" ++ name ++ "'")
+                                                                            Nothing  -> do
+                                                                                tell out
+                                                                                return (((Map.insert (Id name) t sym):symbols), info)
                                                 (Statement (StatementExpr expr))     -> let (out', _, inf) = translateExpression info (sym:symbols) expr in do
                                                     tell (out ++ out')
                                                     return ((sym:symbols), inf)
                                                 (Statement (StmtIf expr stmt))       -> let
                                                         (out', var, inf) = translateExpression info (sym:symbols) expr
-                                                        ((symbols', inf'), out'')              = runWriter $ translate stmt inf (sym:symbols) ""
+                                                        ((symbols', (ServiceInformation i j)), out'')              = runWriter $ translate stmt inf (sym:symbols) ""
+                                                        label = "L" ++ (show j)
                                                     in do
-                                                        tell (out ++ out' ++ "ifFalse " ++ var ++ " goto L\n" ++ out'' ++ "L: ")
-                                                        return (symbols', inf')
+                                                        tell (out ++ out' ++ "ifFalse " ++ var ++ " goto " ++ label ++ "\n" ++ out'' ++ label ++ ": ")
+                                                        return (symbols', ServiceInformation i (j+1))
+                                                (Statement (StmtWhile expr stmt))    -> let
+                                                        (out', var, inf) = translateExpression info (sym:symbols) expr
+                                                        ((symbols', (ServiceInformation i j)), out'')              = runWriter $ translate stmt inf (sym:symbols) ""
+                                                        label = "L" ++ (show j)
+                                                        labelLoop = "L" ++ (show (j+1))
+                                                    in do
+                                                        tell (out ++ out' ++ labelLoop ++ ": ifFalse " ++ var ++ " goto " ++ label ++ "\n" ++ out'' ++ "goto " ++ labelLoop ++ "\n" ++ label ++ ": ")
+                                                        return (symbols', ServiceInformation i (j+2))
                                                 Block                -> do
-                                                    tell (out ++ (concat  $ take (length (sym:symbols)) $ repeat "    ") ++ "{}\n")
+                                                    tell (out ++ "{}\n")
                                                     return ((sym:symbols), info)
                                                 Root                 -> do
                                                     tell out
@@ -291,7 +318,7 @@ translate (Node elem (child:childs)) info symbols out = case elem of
                                                     Block -> let
                                                                 ((outSymbols, info'), log) = runWriter $ translateList (child:childs) info (Map.empty:symbols) ""
                                                              in do 
-                                                                tell (out ++ (concat  $ take (length symbols) $ repeat "    ") ++ "{\n" ++ log ++ (concat  $ take (length symbols) $ repeat "    ") ++ "}\n")
+                                                                tell (out ++ log)
                                                                 return (symbols, info')
                                                     Root  -> let
                                                                 ((outSymbols, info'), log) = runWriter $ translateList (child:childs) info (symbols) out
@@ -300,5 +327,5 @@ translate (Node elem (child:childs)) info symbols out = case elem of
                                                                 return (outSymbols, info')
                                                     _     -> error "Syntax error: unexpected syntax element with childs"
 
-translatePretty str = hPutStrLn stdout $ snd $ runWriter $ translate (fst $ fst $ runWriter $ parse (scan $ str) (Node Root [])) (ServiceInformation 0) [] ""
+translatePretty str = hPutStrLn stdout $ snd $ runWriter $ translate (fst $ fst $ runWriter $ parse (scan $ str) (Node Root [])) (ServiceInformation 0 0) [] ""
 
