@@ -43,7 +43,7 @@ move :: [[Edge]] -> [Int] -> Char -> [Int]
 move fsm t a = nub . concat . map (\s -> getTransitions (fsm !! s) (Char a)) $ t
 
 getNewState :: [[Edge]] -> NfaDfaStatesTable -> NfaStates -> Char -> (NfaDfaStatesTable, Int)
-getNewState fsm table nfaStates a | traceShow (nfaStates) False = undefined
+-- getNewState fsm table nfaStates a | traceShow (nfaStates) False = undefined
 getNewState fsm table nfaStates a = let newNfaStates = eClosure fsm (move fsm nfaStates a)
                                         newDfaState = (Map.foldr max 0 table) + 1
                                         newTable = Map.insertWith (\newVal oldVal -> oldVal) newNfaStates newDfaState table
@@ -52,7 +52,7 @@ getNewState fsm table nfaStates a = let newNfaStates = eClosure fsm (move fsm nf
 addTransition :: [[Edge]] -> Int -> Char -> Int -> [[Edge]]
 addTransition fsm t a u = modifyElem t fsm (fsm !! t ++ [(Char a, u)])
 
-getNewDTransition nfa a table t dStates dfa | traceShow (t) False = undefined
+-- getNewDTransition nfa a table t dStates dfa | traceShow (t) False = undefined
 getNewDTransition nfa a table t dStates dfa = let (newTable, u) = getNewState nfa table (findByValue table t) a
                                                   newDStates = if elem u dStates then dStates else dStates ++ [u]
                                                   newDfa = addTransition dfa t a u
@@ -73,10 +73,12 @@ convertNfa2Dfa (alphabet, edges, init, finals) = let dStates = eClosure edges [i
                                                      (table, dfa) = handleDfaState edges (Map.singleton dStates 0) [0] [] alphabet [[]]
                                                  in (alphabet, dfa, 0, getFinalsStates table finals)
 
-convertNfa2Dfa' :: Fsm -> NfaDfaStatesTable
-convertNfa2Dfa' (alphabet, edges, init, finals) = let dStates = eClosure edges [init]
-                                                      (table, dfa) = handleDfaState edges (Map.singleton dStates 0) [0] [] alphabet [[]]
-                                                  in table
+checkString :: Fsm -> String -> Bool
+checkString (_, edges, init, finals) str = let s0 = eClosure edges [init]
+                                               checkString' finals states []     = if (intersect finals states == []) then False else True
+                                               checkString' finals states (x:xs) = let newStates = eClosure edges (move edges states x)
+                                                                                   in checkString' finals newStates xs
+                                           in checkString' finals s0 str
 
 testFsm :: [[Edge]]
 testFsm = [[(Empty,1),(Empty,7)],[(Empty,2),(Empty,4)],[(Char 'a',3)],[(Empty,6)],[(Char 'b',5)],[(Empty,6)],[(Empty,1),(Empty,7)],[(Char 'a',8)],[(Char 'b',9)],[(Char 'b',10)],[]]
@@ -88,4 +90,20 @@ testFsm2 = [
     [(Char 'a',2)],
     [(Char 'b',4)],
     [(Char 'b',4)]
+ ]
+
+testFsm3 :: [[Edge]]
+testFsm3 = [
+    [(Char 'a',1),(Char 'a',0),(Char 'b',0)],
+    [(Char 'a',2),(Char 'a',1),(Char 'b',1)],
+    [(Char 'b',3),(Char 'a',2),(Char 'b',2), (Empty, 0)],
+    []
+ ]
+
+testFsm4 :: [[Edge]]
+testFsm4 = [
+    [(Empty,3),(Char 'a',1)],
+    [(Empty,0),(Char 'b',2)],
+    [(Empty,1),(Char 'b',3)],
+    [(Empty,2),(Char 'a',0)]
  ]
