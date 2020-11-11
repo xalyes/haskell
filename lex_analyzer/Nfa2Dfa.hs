@@ -62,11 +62,13 @@ handleDfaState :: [[Edge]] -> NfaDfaStatesTable -> [Int] -> [Int] -> [Char] -> [
 -- handleDfaState _ table dStates markedStates _ dfa | traceShow (dfa) False = undefined
 handleDfaState nfa table dStates markedStates alph dfa | sort dStates == sort markedStates = (table, init dfa)
 handleDfaState nfa table dStates markedStates alph dfa | otherwise               = let t = head $ dStates \\ markedStates
-                                                                                       (newTable, newDStates, newDfa) = foldl (\(table', dStates', dfa') a -> getNewDTransition nfa a table' t dStates' dfa') (table, dStates, dfa) alph
+                                                                                       (newTable, newDStates, newDfa) = foldl (\(table', dStates', dfa') a -> getNewDTransition nfa a table' t dStates' dfa')
+                                                                                          (table, dStates, dfa) alph
                                                                                    in handleDfaState nfa newTable newDStates (t:markedStates) alph (newDfa ++ [[]])
 
 getFinalsStates :: NfaDfaStatesTable -> [Int] -> [Int]
-getFinalsStates table finals = map (\x -> snd $ fromJust $ find (\(k, v) -> elem x k) (Map.toList table)) finals
+getFinalsStates table finals = let indices = nub . concat . map (\x -> findIndices (\(k, v) -> elem x k) (Map.toList table)) $ finals
+                               in map (\x -> snd (Map.toList table !! x)) indices
 
 convertNfa2Dfa :: Fsm -> Fsm
 convertNfa2Dfa (alphabet, edges, init, finals) = let dStates = eClosure edges [init]
@@ -107,3 +109,103 @@ testFsm4 = [
     [(Empty,1),(Char 'b',3)],
     [(Empty,2),(Char 'a',0)]
  ]
+
+testFsm5 :: Fsm
+testFsm5 = ("ab", [[(Empty,7),(Empty,1)],[(Empty,2),(Empty,4)],[(Char 'a',3)],[(Empty,6)],[(Char 'b',5)],[(Empty,6)],[(Empty,1),(Empty,7)],[]], 0, [7])
+
+data Token = Mul | Or | Str String | LeftParenthese | RightParenthese
+    deriving (Show, Eq, Ord)
+
+extractWord :: String -> String -> (Token, String)
+extractWord [] acc = (Str acc, [])
+extractWord (x:xs) acc | x /= '(' && x/= ')' && x/= '*' && x/= '|' = extractWord xs (acc ++ [x])
+                       | otherwise = (Str acc, (x:xs))
+
+scanInternal :: String -> [Token] -> [Token]
+scanInternal [] tokens         = tokens
+scanInternal (x:xs) tokens
+                   | x == '('  = tokens ++ [LeftParenthese] ++ scanInternal xs []
+                   | x == ')'  = tokens ++ [RightParenthese] ++ scanInternal xs []
+                   | x == '*'  = tokens ++ [Mul] ++ scanInternal xs []
+                   | x == '|'  = tokens ++ [Or] ++ scanInternal xs []
+                   | otherwise = let (word, rest) = extractWord xs [x]
+                                 in tokens ++ [word] ++ scanInternal rest []
+
+scan str = scanInternal str []
+
+data Factor = FactorExpr RegularExpression | FactorStr String
+    deriving (Show, Eq)
+
+data Term = TermMul Factor | Term Factor
+    deriving (Show, Eq)
+
+data RegularExpression = OrExpression RegularExpression RegularExpression | SingleTerm Term | DoubleExpression RegularExpression RegularExpression
+    deriving (Show, Eq)
+
+parse :: [Token] -> Maybe RegularExpression -> (RegularExpression, [Token])
+parse [] maybeRegex = case maybeRegex of
+                        Nothing -> error "Empty parse input!!!"
+                        Just regex -> (regex, [])
+parse (x:xs) (Just regex) = case x of
+                                LeftParenthese  -> let (resRegex, rest) = parse xs Nothing in parse rest (Just $ DoubleExpression regex resRegex)
+                                Str str         -> parse xs (Just $ DoubleExpression regex (SingleTerm . Term . FactorStr $ str))
+                                Or              -> let (resRegex, rest) = parse xs Nothing in parse rest (Just $ OrExpression regex resRegex)
+                                Mul             -> case regex of 
+                                                      DoubleExpression regex1 (SingleTerm (Term (FactorStr str))) -> parse xs (Just $ DoubleExpression regex1 (SingleTerm . TermMul . FactorStr $ str))
+                                                      OrExpression regex1 (SingleTerm (Term (FactorStr str)))     -> parse xs (Just $ OrExpression regex1 (SingleTerm . TermMul . FactorStr $ str))
+                                                      _ -> parse xs (Just . SingleTerm . TermMul . FactorExpr $ regex)
+                                RightParenthese -> (SingleTerm . Term . FactorExpr $ regex, xs)
+                                _ -> error "Syntax error"
+parse (x:xs) Nothing = case x of
+                                LeftParenthese  -> let (resRegex, rest) = parse xs Nothing in parse rest (Just $ resRegex)
+                                Str str         -> parse xs (Just . SingleTerm . Term . FactorStr $ str)
+                                Or              -> error "Syntax error - no tokens before '|'"
+                                Mul             -> error "Syntax error - no tokens before '*'"
+                                RightParenthese -> error "Syntax error - no tokens before ')'"
+                                _ -> error "Syntax error"
+
+generateNfa :: RegularExpression -> Fsm
+generateNfa regex = case regex of
+                        DoubleExpression regex1 regex2 -> let (alph1, edges1, init1, finals1) = generateNfa regex1
+                                                              (alph2, edges2, init2, finals2) = generateNfa regex2
+                                                              edges2' = map (\l -> map (\(x, y) -> (x, y + (length $ init edges1))) l) edges2
+                                                              finals2' = map (\x -> (x + (length $ init edges1))) finals2
+                                                          in (nub $ alph1 ++ alph2,
+                                                              init edges1 ++ [(last edges1) ++ (head edges2')] ++ tail edges2',
+                                                              init1,
+                                                              finals2')
+                        SingleTerm term                -> case term of
+                                                            Term factor    -> case factor of
+                                                                                FactorStr "ϵ"    -> ("", [[(Empty, 1)], []], 0, [1])
+                                                                                FactorStr str    -> (nub str, map (\(x, y) -> [(Char x, y)]) (zip str (iterate succ 1)) ++ [[]], 0, [length str])
+                                                                                FactorExpr regex -> generateNfa regex
+                                                            TermMul (FactorExpr regex') -> let (alph, edges, initial, finals) = generateNfa regex'
+                                                                                               edges' = map (\l -> map (\(x, y) -> (x, y + 1)) l) edges
+                                                                                               final = length edges' + 1
+                                                                                           in (alph,
+                                                                                              [[(Empty, final), (Empty, 1)]] ++ init edges' ++ [(last edges' ++ [(Empty, 1), (Empty, final)])] ++ [[]],
+                                                                                              initial,
+                                                                                              [final])
+                                                            TermMul (FactorStr "ϵ")     -> ("", [[(Empty,1), (Empty,3)], [(Empty, 2)], [(Empty, 1), (Empty, 3)], []], 0, [3])
+                                                            TermMul (FactorStr str)     -> let (alph, edges, initial, final) = (nub str, map (\(x, y) -> [(Char x, y)]) (zip str (iterate succ 2)) ++ [[]], 0, length str + 2)
+                                                                                               edges' = map (\l -> map (\(x, y) -> (x, y + 1)) l) edges
+                                                                                           in (alph,
+                                                                                              [[(Empty, final), (Empty, 1)]] ++ init edges' ++ [(last edges' ++ [(Empty, 1), (Empty, final)])] ++ [[]],
+                                                                                              initial,
+                                                                                              [final])
+                        OrExpression regex1 regex2     -> let (alph1, edges1, init1, finals1) = generateNfa regex1
+                                                              (alph2, edges2, init2, finals2) = generateNfa regex2
+                                                              edges1' = map (\l -> map (\(x, y) -> (x, y + 1)) l) edges1
+                                                              edges2' = map (\l -> map (\(x, y) -> (x, y + (length edges1) + 1)) l) edges2
+                                                              finals2' = map (\x -> (x + (length $ init edges1))) finals2
+                                                              newLastStateIdx = 1 + length edges1 + length edges2
+                                                              edges1'' = modifyElem (length edges1' - 1) edges1' ((edges1' !! (length edges1' - 1)) ++ [(Empty, newLastStateIdx)])
+                                                              edges2'' = modifyElem (length edges2' - 1) edges2' ((edges2' !! (length edges2' - 1)) ++ [(Empty, newLastStateIdx)])
+                                                          in (nub $ alph1 ++ alph2,
+                                                              [[(Empty, 1), (Empty, length edges1'' + 1)]] ++ edges1'' ++ edges2'' ++ [[]],
+                                                              0,
+                                                              [newLastStateIdx])
+
+
+checkMatch :: String -> String -> Bool
+checkMatch regex = checkString (convertNfa2Dfa $ generateNfa $ fst $ parse (scan regex) Nothing)
