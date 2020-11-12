@@ -1,6 +1,4 @@
-module Nfa2Dfa where
-
-{-# LANGUAGE FlexibleInstances #-}
+module Regexps where
 
 import Numeric
 import Data.Char
