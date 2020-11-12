@@ -137,31 +137,44 @@ data Factor = FactorExpr RegularExpression | FactorStr String
 data Term = TermMul Factor | Term Factor
     deriving (Show, Eq)
 
-data RegularExpression = OrExpression RegularExpression RegularExpression | SingleTerm Term | DoubleExpression RegularExpression RegularExpression
+data Or = SingleOr Term | OrTerms Term Or
     deriving (Show, Eq)
 
-parse :: [Token] -> Maybe RegularExpression -> (RegularExpression, [Token])
-parse [] maybeRegex = case maybeRegex of
-                        Nothing -> error "Empty parse input!!!"
-                        Just regex -> (regex, [])
-parse (x:xs) (Just regex) = case x of
-                                LeftParenthese  -> let (resRegex, rest) = parse xs Nothing in parse rest (Just $ DoubleExpression regex resRegex)
-                                Str str         -> parse xs (Just $ DoubleExpression regex (SingleTerm . Term . FactorStr $ str))
-                                Or              -> let (resRegex, rest) = parse xs Nothing in parse rest (Just $ OrExpression regex resRegex)
-                                Mul             -> case regex of 
-                                                      DoubleExpression regex1 (SingleTerm (Term (FactorStr str))) -> parse xs (Just $ DoubleExpression regex1 (SingleTerm . TermMul . FactorStr $ str))
-                                                      OrExpression regex1 (SingleTerm (Term (FactorStr str)))     -> parse xs (Just $ OrExpression regex1 (SingleTerm . TermMul . FactorStr $ str))
-                                                      _ -> parse xs (Just . SingleTerm . TermMul . FactorExpr $ regex)
-                                RightParenthese -> (SingleTerm . Term . FactorExpr $ regex, xs)
-                                _ -> error "Syntax error"
-parse (x:xs) Nothing = case x of
-                                LeftParenthese  -> let (resRegex, rest) = parse xs Nothing in parse rest (Just $ resRegex)
-                                Str str         -> parse xs (Just . SingleTerm . Term . FactorStr $ str)
-                                Or              -> error "Syntax error - no tokens before '|'"
-                                Mul             -> error "Syntax error - no tokens before '*'"
-                                RightParenthese -> error "Syntax error - no tokens before ')'"
-                                _ -> error "Syntax error"
+data RegularExpression = SingleRegex Or | DoubleRegex Or RegularExpression
+    deriving (Show, Eq)
 
+parseFactor :: [Token] -> (Factor, [Token])
+parseFactor (x:xs) = case x of
+                        (Str str)      -> (FactorStr str, xs)
+                        LeftParenthese -> let (expr, (RightParenthese:rest)) = parseExpression xs
+                                          in (FactorExpr expr, rest)
+                        _              -> error "Syntax error: failed to parse factor"
+
+parseTerm :: [Token] -> (Term, [Token])
+parseTerm tokens = let (factor, rest) = parseFactor tokens
+                   in case rest of 
+                        (Mul:xs) -> (TermMul factor, tail rest)
+                        _        -> (Term factor, rest)
+
+parseOr :: [Token] -> (Or, [Token])
+parseOr tokens = let (term, rest) = parseTerm tokens
+                 in case rest of 
+                        (Or:xs) -> let (or, rest') = parseOr xs
+                                    in (OrTerms term or, rest')
+                        _        -> (SingleOr term, rest)
+
+parseExpression :: [Token] -> (RegularExpression, [Token])
+parseExpression tokens = let (or, rest) = parseOr tokens
+                         in case rest of 
+                                [] -> (SingleRegex or, rest)
+                                (RightParenthese:rest') -> (SingleRegex or, rest)
+                                _ -> let (expr, rest') = parseExpression rest
+                                     in (DoubleRegex or expr, rest')
+
+parse tokens = let (regex, rest) = parseExpression tokens
+        in if rest == [] then regex else error "Syntax error: failed to parse regular expression"
+
+{-
 generateNfa :: RegularExpression -> Fsm
 generateNfa regex = case regex of
                         DoubleExpression regex1 regex2 -> let (alph1, edges1, init1, finals1) = generateNfa regex1
@@ -207,3 +220,4 @@ generateNfa regex = case regex of
 
 checkMatch :: String -> String -> Bool
 checkMatch regex = checkString (convertNfa2Dfa $ generateNfa $ fst $ parse (scan regex) Nothing)
+-}
