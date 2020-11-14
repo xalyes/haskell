@@ -143,35 +143,55 @@ data Or = SingleOr Term | OrTerms Term Or
 data RegularExpression = SingleRegex Or | DoubleRegex Or RegularExpression
     deriving (Show, Eq)
 
-parseFactor :: [Token] -> (Factor, [Token])
-parseFactor (x:xs) = case x of
-                        (Str str)      -> (FactorStr str, xs)
-                        LeftParenthese -> let (expr, (RightParenthese:rest)) = parseExpression xs
-                                          in (FactorExpr expr, rest)
-                        _              -> error "Syntax error: failed to parse factor"
+parseFactor :: State [Token] Factor
+parseFactor = do
+    (token:ts) <- get
+    put ts
+    case token of
+        (Str str)      -> do
+                            return (FactorStr str)
+        LeftParenthese -> do
+                            expr <- parseExpression
+                            (RightParenthese:rest) <- get
+                            put rest
+                            return (FactorExpr expr)
+        _              -> error "Syntax error: failed to parse factor"
 
-parseTerm :: [Token] -> (Term, [Token])
-parseTerm tokens = let (factor, rest) = parseFactor tokens
-                   in case rest of 
-                        (Mul:xs) -> (TermMul factor, tail rest)
-                        _        -> (Term factor, rest)
+parseTerm :: State [Token] Term
+parseTerm = do
+    factor <- parseFactor
+    rest <- get
+    case rest of
+        (Mul:xs) -> do
+                        put xs
+                        return (TermMul factor)
+        _        -> do
+                        put rest
+                        return (Term factor)
 
-parseOr :: [Token] -> (Or, [Token])
-parseOr tokens = let (term, rest) = parseTerm tokens
-                 in case rest of 
-                        (Or:xs) -> let (or, rest') = parseOr xs
-                                    in (OrTerms term or, rest')
-                        _        -> (SingleOr term, rest)
+parseOr :: State [Token] Or
+parseOr = do
+    term <- parseTerm
+    rest <- get
+    case rest of 
+        (Or:xs) -> do
+                        put xs
+                        or <- parseOr
+                        return (OrTerms term or)
+        _       -> do return (SingleOr term)
 
-parseExpression :: [Token] -> (RegularExpression, [Token])
-parseExpression tokens = let (or, rest) = parseOr tokens
-                         in case rest of 
-                                [] -> (SingleRegex or, rest)
-                                (RightParenthese:rest') -> (SingleRegex or, rest)
-                                _ -> let (expr, rest') = parseExpression rest
-                                     in (DoubleRegex or expr, rest')
+parseExpression :: State [Token] RegularExpression
+parseExpression = do
+    or <- parseOr
+    rest <- get
+    case rest of 
+        [] -> return (SingleRegex or)
+        (RightParenthese:_) -> return (SingleRegex or)
+        _ -> do
+                expr <- parseExpression
+                return (DoubleRegex or expr)
 
-parse tokens = let (regex, rest) = parseExpression tokens
+parse tokens = let (regex, rest) = runState parseExpression tokens
         in if rest == [] then regex else error "Syntax error: failed to parse regular expression"
 
 generateNfa :: RegularExpression -> Fsm
