@@ -8,7 +8,10 @@ import Data.Bits
 import Data.List
 import Debug.Trace
 import Control.Monad.Writer
+import Control.Monad.State
 import System.IO
+
+import Data.Map (Map)
 import qualified Data.Map as Map
 
 data Type = Boolean | Integ | Character
@@ -329,3 +332,118 @@ translate (Node elem (child:childs)) info symbols out = case elem of
 
 translatePretty str = hPutStrLn stdout $ snd $ runWriter $ translate (fst $ fst $ runWriter $ parse (scan $ str) (Node Root [])) (ServiceInformation 0 0) [] ""
 
+data Terminal = Ch Char | Eol
+  deriving (Show, Eq, Ord)
+data NonTerminal = NT String
+  deriving (Show, Eq, Ord)
+type GrammarString = [Either Terminal NonTerminal]
+
+type SyntaxTable = Map (NonTerminal, Terminal) GrammarString
+
+lc = Left . Ch
+rnt = Right . NT
+
+handleState :: SyntaxTable -> State (GrammarString, String) ()
+handleState table = do
+                      (stack', input') <- get
+                      let (top:stack) = stack'
+                      case top of
+                        Left (Ch c) -> do let (current:input) = input'
+                                          if c == current
+                                          then put (stack, input)
+                                          else error ("Syntax error 1: Stack - " ++ (show stack') ++ "; Input - " ++ (show input'))
+                        Right nt    -> let current = if input' == "" then Eol else Ch $ head input'
+                                       in case Map.lookup (nt, current) table of
+                                            Just res -> do put (res ++ stack, input')
+                                            Nothing  -> error ("Syntax error 2: Stack - " ++ (show stack') ++ "; Input - " ++ (show input'))
+
+parseTableParser :: SyntaxTable -> State (GrammarString, String) ()
+parseTableParser table = do handleState table
+                            (stack, str) <- get
+                            if stack == [Left Eol]
+                            then if str == [] then return () else error "Syntax error 3"
+                            else parseTableParser table
+
+parse' table start str = snd $ runState (parseTableParser table) ([Right start, Left Eol], str)
+
+-- S -> 0 S 1 | 0 1
+parse422a :: String -> (GrammarString, String)
+parse422a str = let table = Map.fromList [
+                        ((NT "S", Ch '0'), [lc '0', rnt "S'"]),
+                        ((NT "S'", Ch '0'), [rnt "S", lc '1']),
+                        ((NT "S'", Ch '1'), [lc '1'])
+                      ]
+                    start = NT "S"
+                in
+                  parse' table start str
+
+-- S -> S S + | S S * | a
+parse421 :: String -> (GrammarString, String)
+parse421 str = let table = Map.fromList [
+                        ((NT "S", Ch 'a'), [lc 'a', rnt "S1", rnt "S3"]),
+                        ((NT "S1", Ch 'a'), [lc 'a', rnt "S2"]),
+                        ((NT "S1", Eol), []),
+                        ((NT "S1", Ch '+'), []),
+                        ((NT "S1", Ch '*'), []),
+                        ((NT "S2", Ch '+'), [lc '+']),
+                        ((NT "S2", Ch '*'), [lc '*']),
+                        ((NT "S3", Ch '+'), []),
+                        ((NT "S3", Ch '*'), []),
+                        ((NT "S3", Ch 'a'), map (\x -> rnt x) ["S", "S2", "S3"]),
+                        ((NT "S3", Eol), [])
+                      ]
+                   start = NT "S"
+                in
+                  parse' table start str
+
+-- S -> + S S | * S S | a
+parse422b :: String -> (GrammarString, String)
+parse422b str = let table = Map.fromList [
+                        ((NT "S", Ch 'a'), [lc 'a']),
+                        ((NT "S", Ch '+'), [lc '+', rnt "S", rnt "S"]),
+                        ((NT "S", Ch '*'), [lc '*', rnt "S", rnt "S"])
+                      ]
+                    start = NT "S"
+                in
+                  parse' table start str
+
+-- S -> S (S) S | Eol
+parse422v :: String -> (GrammarString, String)
+parse422v str = let table = Map.fromList [
+                        ((NT "S", Ch '('), [lc '(', rnt "S", lc ')', rnt "S", rnt "S"]),
+                        ((NT "S", Ch ')'), []),
+                        ((NT "S", Eol), [])
+                      ]
+                    start = NT "S"
+                in
+                  parse' table start str
+
+-- S -> S + S | S S | (S) | S* | a
+parse422g :: String -> (GrammarString, String)
+parse422g str = let table = Map.fromList [
+                        ((NT "S", Ch '('), [lc '(', rnt "S", lc ')', rnt "S'"]),
+                        ((NT "S", Ch 'a'), [lc 'a', rnt "S'"]),
+                        ((NT "S'", Ch 'a'), [lc 'a', rnt "S'"]),
+                        ((NT "S'", Ch '('), [lc '(', rnt "S", lc ')', rnt "S'"]),
+                        ((NT "S'", Ch ')'), []),
+                        ((NT "S'", Ch '+'), [lc '+', rnt "S", rnt "S'"]),
+                        ((NT "S'", Ch '*'), [lc '*', rnt "S'"]),
+                        ((NT "S'", Eol), [])
+                      ]
+                    start = NT "S"
+                in
+                  parse' table start str
+
+-- S -> (L) | a 
+-- L -> L,S | S
+parse422d :: String -> (GrammarString, String)
+parse422d str = let table = Map.fromList [
+                        ((NT "S", Ch 'a'), [lc 'a']),
+                        ((NT "S", Ch '('), [lc '(', rnt "S", rnt "L", lc ')']),
+                        ((NT "L", Ch ')'), []),
+                        ((NT "L", Eol), []),
+                        ((NT "L", Ch ','), [lc ',', rnt "S", rnt "L"])
+                      ]
+                    start = NT "S"
+                in
+                  parse' table start str
