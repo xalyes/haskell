@@ -61,3 +61,23 @@ removeSingleProductions g = case extractSingleProduction g of
                                                                                             [Right nt'] -> (Just (nt, nt'), acc ++ xs)
                                                                                             _ -> extractSingleProduction' xs (acc ++ [x])
                                           extractSingleProduction' [] acc = (Nothing, acc)
+
+type CnfGrammar = [(NonTerminal, Either Char (NonTerminal, NonTerminal))]
+
+handleNonTerminal :: (NonTerminal, [Either Terminal NonTerminal]) -> (CnfGrammar, Integer) -> (CnfGrammar, Integer)
+handleNonTerminal (nt, arr) (acc, counter) = case arr of
+                                                [Left (T ch)] -> (acc ++ [(nt, Left ch)], counter)
+                                                [Right nt1, Right nt2] -> (acc ++ [(nt, Right (nt1, nt2))], counter)
+                                                (x:x':xs) -> case x of
+                                                                Left (T y) -> let newNt = NT $ "_NT" ++ show counter
+                                                                              in handleNonTerminal (nt, (Right newNt):x':xs) (acc ++ [(newNt, Left y)], counter + 1)
+                                                                Right nt1 -> case x' of
+                                                                                Right nt2 -> let newNt = NT $ "_NT" ++ show counter
+                                                                                             in handleNonTerminal (nt, (Right newNt):xs) (acc ++ [(newNt, Right (nt1, nt2))], counter + 1)
+                                                                                Left (T y) -> let newNt = NT $ "_NT" ++ show counter
+                                                                                              in handleNonTerminal (nt, (Right nt1):(Right newNt):xs) (acc ++ [(newNt, Left y)], counter + 1)
+
+convertToCnf :: Grammar -> CnfGrammar
+convertToCnf g = handle (removeSingleProductions $ toEFreeGrammar $ g) ([], 0)
+                    where handle (x:xs) acc = handle xs (handleNonTerminal x acc)
+                          handle [] (cnf, _) = cnf
