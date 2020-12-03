@@ -447,3 +447,27 @@ parse422d str = let table = Map.fromList [
                     start = NT "S"
                 in
                   parse' table start str
+
+parseIf :: String -> (GrammarString, String)
+parseIf str = let table = Map.fromList [
+                        ((NT "stmt", Ch 'i'), [lc 'i', rnt "stmt", rnt "stmtTail"]),
+                        ((NT "stmt", Ch 'w'), [lc 'w', rnt "stmt"]),
+                        ((NT "stmt", Ch '{'), [lc '{', rnt "list", lc '}']),
+                        ((NT "stmt", Ch 's'), [lc 's']),
+                        ((NT "stmtTail", Ch 'e'), [lc 'e', rnt "stmt"]),
+                        ((NT "stmtTail", Eol), []),
+                        ((NT "stmtTail", Ch '}'), []),
+                        ((NT "list", Ch 'i'), [rnt "stmt", rnt "listTail"]),
+                        ((NT "list", Ch 'w'), [rnt "stmt", rnt "listTail"]),
+                        ((NT "list", Ch '{'), [rnt "stmt", rnt "listTail"]),
+                        ((NT "list", Ch 's'), [rnt "stmt", rnt "listTail"]),
+                        ((NT "listTail", Ch 'i'), [rnt "list"]),
+                        ((NT "listTail", Ch 'w'), [rnt "list"]),
+                        ((NT "listTail", Ch '{'), [rnt "list"]),
+                        ((NT "listTail", Ch 's'), [rnt "list"]),
+                        ((NT "listTail", Eol), []),
+                        ((NT "listTail", Ch '}'), [])
+                      ]
+                  start = NT "stmt"
+                in
+                  parse' table start str
