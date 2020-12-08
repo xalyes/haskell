@@ -1,6 +1,8 @@
 module LrAnalyzer where
 
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 import Data.List
 import Data.Maybe
@@ -29,6 +31,17 @@ newtype NonTerminal = NT String
 type Grammar = (NonTerminal, [(NonTerminal, [Either Terminal NonTerminal])])
 
 type Item = (NonTerminal, Int, [Either Terminal NonTerminal])
+
+instance {-# OVERLAPS #-} Show Item where
+  show (NT nt, dot, gstr) = nt ++ "->" ++ showGstr dot gstr "" ++ ""
+                                where showGstr dot [] acc = if dot == 0 then acc ++ "." else acc
+                                      showGstr dot (x:xs) acc = if dot == 0 then showGstr (-1) xs (acc ++ "." ++ showX x) else showGstr (dot - 1) xs (acc ++ showX x)
+                                        where showX (Left (T c)) = [c]
+                                              showX (Left E) = "_"
+                                              showX (Right (NT nt)) = nt
+
+instance {-# OVERLAPS #-} Show [Item] where
+    show items = "{ " ++ (foldl (\b a -> b ++ (show a) ++ ", ") "" items) ++ "}\n"
 
 parseGrammarString :: [String] -> String -> [[Either Terminal NonTerminal]] -> [Terminal] -> ([[Either Terminal NonTerminal]], [Terminal])
 parseGrammarString _ [] acc alphabet    = (acc, alphabet)
@@ -84,19 +97,15 @@ calculateItems input = let
 
 follow' :: Grammar -> (NonTerminal, [Either Terminal NonTerminal]) -> NonTerminal -> [Terminal]
 follow' g (ntOrig, gstr) nt = case elemIndex (Right nt) gstr of
-                                    Nothing -> if ntOrig == nt 
-                                               then case head gstr of
-                                                        Left t -> [t]
-                                                        Right nt' -> follow g nt'
-                                               else []
-                                    Just idx -> if idx + 1 == length gstr
-                                                then []
+                                    Nothing -> []
+                                    Just idx -> if length gstr - idx == 1
+                                                then if ntOrig /= nt then follow g ntOrig else []
                                                 else case gstr !! (idx + 1) of
                                                         Left t -> t:(follow' g (ntOrig, (drop (idx + 1) gstr)) nt)
                                                         Right nt' -> if nt /= nt' then follow g nt' else follow' g (ntOrig, (drop (idx + 1) gstr)) nt
 
 follow :: Grammar -> NonTerminal -> [Terminal]
-follow g@(start, g') nt = rmdups $ foldr (\(st, a) b -> b ++ follow' g (st, (a ++ [Left E])) nt) [] g'
+follow g@(start, g') nt = rmdups $ foldr (\(st, a) b -> b ++ follow' g (st, (a)) nt) [] g'
 
 data Action = S Int | R (NonTerminal, [Either Terminal NonTerminal]) | Accept
     deriving (Eq, Show)
@@ -104,14 +113,19 @@ data Action = S Int | R (NonTerminal, [Either Terminal NonTerminal]) | Accept
 type ActionTable = Map (Int,Terminal) Action
 type GotoTable = Map (Int, NonTerminal) Int
 
-checkedMapInsert :: Ord k => k -> a -> Map k a -> Map k a
-checkedMapInsert k v m = if Map.member k m then error "Failed to insert key in map - already exists!" else Map.insert k v m
+instance {-# OVERLAPS #-} Show ActionTable where
+  show m = (foldl (\b a -> b ++ (show a) ++ "\n") "" (Map.toList m))
+
+checkedMapInsert :: (Ord k, Show k, Show a, Eq a) => k -> a -> Map k a -> Map k a
+checkedMapInsert k v m = if Map.member k m && (m Map.! k) /= v
+                         then error ("Failed to insert key " ++ show k ++ " (value: " ++ show v ++ ") in map - already exists! Current Map:\n")
+                         else Map.insert k v m
 
 processItem :: [[Item]] -> Grammar -> Int -> [Item] -> Item -> State ActionTable ()
 processItem lrSet g n i (NT "S'", 1, [Right (NT _)]) = do { m <- get; put $ checkedMapInsert (n, E) Accept m }
 processItem lrSet g n i (nt, dot, str) = if dot == length str
                                          then do
-                                            let follows = follow g nt
+                                            let follows = follow g nt ++ [E]
                                             mapM_ (\a -> do {m <- get; put $ checkedMapInsert (n, a) (R (nt, str)) m }) follows
                                          else if isLeft $ str !! dot
                                               then do
@@ -123,11 +137,11 @@ processItem lrSet g n i (nt, dot, str) = if dot == length str
                                                         Just idx -> put $ checkedMapInsert (n, (fromLeft (error "ill-formed") (str !! dot))) (S idx) m
                                               else do return ()
 
-buildSlrTable' :: Grammar -> [[Item]] -> [[Item]] -> Int -> ActionTable -> ActionTable
-buildSlrTable' g lrSet [] n t = t
-buildSlrTable' g lrSet (i:items) n t = buildSlrTable' g lrSet items (n+1) (execState (forM_ i (processItem lrSet g n i)) t)
+buildActionTable' :: Grammar -> [[Item]] -> [[Item]] -> Int -> ActionTable -> ActionTable
+buildActionTable' g lrSet [] n t = t
+buildActionTable' g lrSet (i:items) n t = buildActionTable' g lrSet items (n+1) (execState (forM_ i (processItem lrSet g n i)) t)
 
-buildSlrTable g items = buildSlrTable' g items items 0 Map.empty
+buildActionTable g items = buildActionTable' g items items 0 Map.empty
 
 processNonTerminal :: [[Item]] -> Grammar -> Int -> [Item] -> NonTerminal -> State GotoTable ()
 processNonTerminal lrSet g n i nt = let ij = goto g i (Right nt)
@@ -142,3 +156,7 @@ buildGotoTable' g lrSet (i:items) nts n t = buildGotoTable' g lrSet items nts (n
 
 buildGotoTable g items = let nts = foldr (\a b -> fst a:b) [] (snd g)
                          in buildGotoTable' g items items (nts \\ [NT "S'"]) 0 Map.empty
+
+buildSlrTable strs = let g = fst $ parseGrammar' strs
+                         items = calculateItems strs
+                     in (buildActionTable g items, buildGotoTable g items)
