@@ -12,6 +12,11 @@ import Data.Semigroup ((<>))
 import System.CPUTime
 import Control.Concurrent
 
+import Data.List
+import Data.Foldable
+
+import Text.Printf
+
 data Settings = Settings
   { path       :: String
   , eps        :: Int }
@@ -37,22 +42,25 @@ main = sendFile =<< execParser opts
      <> progDesc "Send strings delimited by '\\n' from file to socket with some EPS")
 
 sendFile :: Settings -> IO ()
-sendFile (Settings path eps) = do events <- readLines path
-                                  runTCPClient "127.0.0.1" "13666" (handleSocket eps events)
+sendFile (Settings path eps) = do events <- readFile path
+                                  start <- getCPUTime
+                                  runTCPClient "127.0.0.1" "13666" (handleSocket eps (processData eps events))
+                                  end <- getCPUTime
+                                  let diff = (fromIntegral (end - start)) / (10^12)
+                                  printf "Sending time: %0.3f sec\n" (diff :: Double)
 
 handleSocket :: Int -> [String] -> Socket -> IO () 
-handleSocket eps events socket = do
-                                     start <- getCPUTime
-                                     let (msg, rest) = takeAtMostN eps events
-                                     if msg == [] then return () else do
-                                     let package = concatMap (\s -> if s == [] then "" else s ++ "\n") msg
-                                     sendAll socket (C.pack package)
-                                     end <- getCPUTime
-                                     let elapsed = end - start
-                                     if elapsed < 10^12 then do
-                                         threadDelay ((fromInteger (10^12 - elapsed)) `div` 10^6)
-                                         handleSocket eps rest socket
-                                     else handleSocket eps rest socket
+handleSocket eps (msg:rest) socket = do
+                                         start <- getCPUTime
+                                         -- let package = concatMap (\s -> if s == [] then "" else s ++ "\n") msg
+                                         sendAll socket (C.pack $ msg)
+                                         end <- getCPUTime
+                                         if rest == [] then return () else do
+                                         let elapsed = end - start
+                                         if elapsed < 10^12 then do
+                                             threadDelay ((fromInteger (10^12 - elapsed)) `div` 10^6)
+                                             handleSocket eps rest socket
+                                         else handleSocket eps rest socket
                                      
                                  
     -- msg <- recv s 1024
@@ -74,6 +82,15 @@ runTCPClient host port client = withSocketsDo $ do
 readLines :: FilePath -> IO [String]
 readLines = fmap lines . readFile
 
-takeAtMostN :: Int -> [String] -> ([String], [String])
-takeAtMostN n strs = if length strs <= n then (strs, []) else (take n strs, drop n strs)
+splitToChunks [] s offset = [s]
+splitToChunks (i:[]) s offset = let (chunk, rest) = Data.List.splitAt (i-offset) s in [chunk, rest]
+splitToChunks (i:idxs) s offset = let (chunk, rest) = Data.List.splitAt (i-offset) s
+                                  in chunk : splitToChunks idxs rest i
+
+everyN = \n -> map head . takeWhile (not . Prelude.null) . iterate (Prelude.drop n)
+
+getLineIndexes = \s -> Data.List.findIndices (\e -> e == '\n') s
+
+processData eps events = let seqEvents = events
+                         in splitToChunks (map (\i -> i-1) $ Prelude.drop 1 $ everyN eps $ getLineIndexes seqEvents) seqEvents 0
 
