@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns #-}
 module Main (main) where
 
 import qualified Control.Exception as E
@@ -11,6 +12,7 @@ import Data.Semigroup ((<>))
 
 import System.CPUTime
 import Control.Concurrent
+import Control.DeepSeq
 
 import Data.List
 import Data.Foldable
@@ -50,31 +52,33 @@ main = sendFile =<< execParser opts
 
 sendFile :: Settings -> IO ()
 sendFile (Settings path eps threads) = do  events <- C.readFile path
-                                           --let chnks = processData eps events
-                                           --let chList = nChunks threads chunks
+                                           let chunks = processData eps events
+                                           let chList = nChunks threads chunks
                                            mVars <- sequence [newEmptyMVar | i <- [1..threads]]
-                                           --let threadData = zip mVars chList
+                                           let !threadData = zip mVars chList
                                            start <- getCPUTime
-                                           sequence_ [forkIO $ do runTCPClient "127.0.0.1" "13666" (handleSocket [events]); putMVar mVar 1 | mVar <- mVars]
-                                           rs <- sequence [takeMVar mVar | mVar <- mVars]
+                                           printf "Start %d\n" start
+                                           sequence [forkIO $ do runTCPClient "127.0.0.1" "13666" (handleSocket chunk); putMVar mVar 1 | (mVar, chunk) <- threadData]
+                                           rs <- sequence [takeMVar mVar | (mVar, _) <- threadData]
                                            end <- getCPUTime
+                                           printf "End %d\n" end
                                            let diff = (fromIntegral (end - start)) / (10^12)
-                                           printf "Sending time: %0.3f sec\n" (diff :: Double)
-                                           let resultEps = (fromIntegral $ (C.length $ C.filter (\e -> e == '\n') events) * threads) / diff
+                                           printf "Sending time: %0.3f sec (%d - %d)\n" (diff :: Double) end start
+                                           let resultEps = (fromIntegral $ (C.length $ C.filter (\e -> e == '\n') events)) / diff
                                            printf "EPS: %0.3f sec\n" (resultEps :: Double)
 
 handleSocket :: [C.ByteString] -> Socket -> IO () 
 handleSocket (msg:rest) socket = do
-                                         --start <- getCPUTime
+                                         start' <- getCPUTime
                                          -- let package = concatMap (\s -> if s == [] then "" else s ++ "\n") msg
                                          sendAll socket (msg)
-                                         --end <- getCPUTime
+                                         end' <- getCPUTime
                                          if rest == [] then return () else do
-                                         --let elapsed = end - start
-                                         --if elapsed < 10^12 then do
-                                           --  threadDelay ((fromInteger (10^12 - elapsed)) `div` 10^6)
-                                            -- handleSocket rest socket
-                                         handleSocket rest socket
+                                         let elapsed = end' - start'
+                                         if elapsed < 10^12 then do
+                                             threadDelay ((fromInteger (10^12 - elapsed)) `div` 10^6)
+                                             handleSocket rest socket
+                                         else handleSocket rest socket
                                      
                                  
     -- msg <- recv s 1024
@@ -101,13 +105,13 @@ readLines :: FilePath -> IO [String]
 readLines = fmap lines . readFile
 
 splitToChunks [] s offset = [s]
-splitToChunks (i:[]) s offset = let (chunk, rest) = Data.List.splitAt (i-offset) s in [chunk, rest]
-splitToChunks (i:idxs) s offset = let (chunk, rest) = Data.List.splitAt (i-offset) s
+splitToChunks (i:[]) s offset = let (chunk, rest) = C.splitAt (i-offset) s in [chunk, rest]
+splitToChunks (i:idxs) s offset = let (chunk, rest) = C.splitAt (i-offset) s
                                   in chunk : splitToChunks idxs rest i
 
 everyN = \n -> map head . takeWhile (not . Prelude.null) . iterate (Prelude.drop n)
 
-getLineIndexes = \s -> Data.List.findIndices (\e -> e == '\n') s
+getLineIndexes = \s -> C.findIndices (\e -> e == '\n') s
 
 processData eps events = let seqEvents = events
                          in splitToChunks (map (\i -> i-1) $ Prelude.drop 1 $ everyN eps $ getLineIndexes seqEvents) seqEvents 0
